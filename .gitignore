@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Node / Frontend
+node_modules/
+signalrx-dashboard/dist/
+signalrx-dashboard/.vite/
+
+# Large media — frames (serve from local only)
+signalrx-dashboard/public/frames/
+signalrx-dashboard/public/ezgif-frames/
+ezgif-56ba051ccf85543a-jpg/
+project-jpg/
+
+# ChromaDB vector store (local only)
+backend/chroma_store/
+chroma_store/
+
+# Logs / temp
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user

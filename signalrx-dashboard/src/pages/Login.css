@@ -1,0 +1,137 @@
+/* ══════════════════════════════════════════════════════════
+   Login.css  —  AyuScout V2  |  Centered Auth Page
+   Replaces the split-screen layout with a centered card
+   ══════════════════════════════════════════════════════════ */
+
+/* ── Root: full-screen centered wrapper ── */
+.lg-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font-family: 'Inter', system-ui, sans-serif;
+  transition: background 0.5s ease;
+}
+
+/* Light theme background */
+[data-theme="light"] .lg-root,
+.lg-root[data-theme="light"] {
+  background: radial-gradient(ellipse 130% 100% at 60% -10%,
+    #dbeafe 0%, #f0f4ff 35%, #f8fafc 70%, #eef2ff 100%);
+}
+
+/* Dark theme background */
+[data-theme="dark"] .lg-root,
+.lg-root[data-theme="dark"] {
+  background: radial-gradient(ellipse 120% 90% at 65% -5%,
+    #1e1b4b 0%, #0f172a 40%, #020617 75%, #0d0a2e 100%);
+}
+
+/* ── Animated particle canvas ── */
+.lg-particle-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Soft radial orbs ── */
+.lg-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  pointer-events: none;
+  z-index: 0;
+  animation: lgOrbDrift ease-in-out infinite;
+}
+.lg-orb-1 {
+  width: 500px; height: 500px;
+  top: -160px; right: -100px;
+  animation-duration: 12s;
+}
+.lg-orb-2 {
+  width: 380px; height: 380px;
+  bottom: -120px; left: -80px;
+  animation-duration: 15s;
+  animation-delay: -5s;
+}
+.lg-orb-3 {
+  width: 260px; height: 260px;
+  top: 40%; left: 55%;
+  animation-duration: 10s;
+  animation-delay: -8s;
+}
+
+[data-theme="light"] .lg-orb-1 { background: rgba(37,99,235,0.1); }
+[data-theme="light"] .lg-orb-2 { background: rgba(124,58,237,0.07); }
+[data-theme="light"] .lg-orb-3 { background: rgba(16,185,129,0.06); }
+
+[data-theme="dark"] .lg-orb-1 { background: rgba(99,102,241,0.18); }
+[data-theme="dark"] .lg-orb-2 { background: rgba(139,92,246,0.14); }
+[data-theme="dark"] .lg-orb-3 { background: rgba(34,211,238,0.08); }
+
+@keyframes lgOrbDrift {
+  0%,100% { transform: translate(0, 0) scale(1); }
+  33%      { transform: translate(20px, -15px) scale(1.04); }
+  66%      { transform: translate(-12px, 18px) scale(0.97); }
+}
+
+/* ── Auth card overrides — widen & center ── */
+.lg-card {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  max-width: 520px !important;
+  margin: 0 16px;
+  /* Inherit glass look from lc-card */
+  animation: lgCardIn 0.55s cubic-bezier(0.4, 0, 0.2, 1) both;
+  max-height: 92vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99,102,241,0.3) transparent;
+}
+.lg-card::-webkit-scrollbar { width: 4px; }
+.lg-card::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.3); border-radius: 2px; }
+
+@keyframes lgCardIn {
+  from { opacity: 0; transform: translateY(28px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Entrance animation ── */
+.lg-root:not(.lg-ready) .lg-card {
+  opacity: 0;
+}
+.lg-root.lg-ready .lg-card {
+  opacity: 1;
+}
+
+/* ── Brand watermark at bottom ── */
+.lg-root::after {
+  content: '🛡️ AyuScout V2 · Pharmacovigilance Intelligence';
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  transition: color 0.5s;
+}
+[data-theme="light"] .lg-root::after,
+.lg-root[data-theme="light"]::after { color: rgba(100,116,139,0.6); }
+[data-theme="dark"]  .lg-root::after,
+.lg-root[data-theme="dark"]::after  { color: rgba(71,85,105,0.7); }
+
+/* ── Mobile ── */
+@media (max-width: 580px) {
+  .lg-card { margin: 0 10px; padding: 22px 18px !important; }
+}

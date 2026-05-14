@@ -1,0 +1,41 @@
+# ============================================
+# AyuScout V2 — Backend Dependencies
+# ============================================
+
+# --- Core API Framework ---
+fastapi
+uvicorn[standard]
+
+# --- AI / LLM Pipeline ---
+langgraph
+langchain
+langchain-community
+langchain-ollama
+langchain-google-genai
+
+
+# --- Data Validation ---
+pydantic
+
+# --- ORM / Database ---
+sqlalchemy
+
+# --- Vector Database (Local) ---
+chromadb
+# sentence-transformers (Removed to save RAM - using Cloud Embeddings)
+
+
+# --- PII Masking (Regex-based, lightweight) ---
+# presidio-analyzer        # Uncomment for production-grade NER-based PII
+# presidio-anonymizer
+# spacy
+
+# --- E2B XML Export ---
+lxml
+
+# --- Environment Management ---
+python-dotenv
+
+# --- Live Web Scraping (Phase 2 — Real Crawler) ---
+requests
+beautifulsoup4

@@ -1,0 +1,46 @@
+services:
+  # ---------------------------------------------------------------------------
+  # BACKEND: FastAPI Server (AyuScout V2 API)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: ayuscout-backend
+    env: python
+    region: ohio
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ayuscout-db
+          property: connectionString
+      - key: GOOGLE_API_KEY
+        sync: false # User must set this manually in Render Dashboard
+      - key: PYTHON_VERSION
+        value: 3.10.0
+    healthCheckPath: /api/health
+
+  # ---------------------------------------------------------------------------
+  # FRONTEND: React (Vite) Dashboard
+  # ---------------------------------------------------------------------------
+  - type: static
+    name: ayuscout-frontend
+    env: static
+    region: ohio
+    plan: free
+    buildCommand: cd signalrx-dashboard && npm install && npm run build
+    publishPath: signalrx-dashboard/dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        fromService:
+          name: ayuscout-backend
+          type: web
+          property: url
+
+# ---------------------------------------------------------------------------
+# DATABASE: Managed PostgreSQL (Persistence)
+# ---------------------------------------------------------------------------
+databases:
+  - name: ayuscout-db
+    plan: free
+    region: ohio
