@@ -67,12 +67,23 @@ export default function HeroCinematic({ onEnter }) {
   /* ── Preload all frames ──────────────────────────────────────── */
   useEffect(() => {
     let cancelled = false
+
+    // Production fallback: if frame 1 errors (no /frames/ on CDN),
+    // skip the cinematic and go straight to login after 2 s
+    const fallbackTimer = setTimeout(() => {
+      if (!cancelled && !canvasReady) {
+        console.info('[HeroCinematic] Frames unavailable — skipping cinematic.')
+        if (!doneRef.current) { doneRef.current = true; onEnter() }
+      }
+    }, 2000)
+
     for (let i = 0; i < TOTAL_FRAMES; i++) {
       const img = new Image()
       img.src = src(i + 1)
       const idx = i
       img.onload = () => {
         if (cancelled) return
+        clearTimeout(fallbackTimer)          // frames exist — cancel skip
         framesRef.current[idx] = img
         loadedRef.current++
         const pct = Math.round((loadedRef.current / TOTAL_FRAMES) * 100)
@@ -87,10 +98,12 @@ export default function HeroCinematic({ onEnter }) {
         if (cancelled) return
         loadedRef.current++
         setLoadPct(Math.round((loadedRef.current / TOTAL_FRAMES) * 100))
+        // If ALL frames errored and canvas never became ready, the fallbackTimer
+        // above will fire and redirect — no action needed here
       }
     }
-    return () => { cancelled = true }
-  }, [sizeCanvas, drawFrame])
+    return () => { cancelled = true; clearTimeout(fallbackTimer) }
+  }, [sizeCanvas, drawFrame, canvasReady, onEnter])
 
   /* ── Main RAF loop: time-based playback ──────────────────────── */
   useEffect(() => {

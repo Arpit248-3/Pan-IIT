@@ -1,0 +1,6 @@
+/*
+  Render Static Site — SPA redirect rule.
+  All routes fall back to index.html so React Router handles them.
+*/
+/*   path        status */
+/   /index.html  200
