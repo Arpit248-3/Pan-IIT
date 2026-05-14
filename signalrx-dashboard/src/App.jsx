@@ -18,6 +18,7 @@ import DifferentiatorsShowcase from './pages/DifferentiatorsShowcase'
 import CrawlerPage from './pages/CrawlerPage'
 import CommandCenter from './pages/CommandCenter'
 import HeroCinematic from './pages/HeroCinematic'
+import { SettingsProvider } from './context/SettingsContext'
 
 const titles = {
   dashboard:            'Actionable Insights Dashboard',
@@ -58,18 +59,17 @@ export default function App() {
   const [modal, setModal]           = useState(null)
   const [currentUser, setCurrentUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
-  const [heroShown, setHeroShown]   = useState(false)   // always show intro on fresh load
+  const [heroShown, setHeroShown]   = useState(false)
 
   const isAdmin = currentUser?.role === 'admin'
 
-  // On mount: restore user from localStorage
+  // ── Restore auth from localStorage ──────────────────────────
   useEffect(() => {
     try {
       const stored = localStorage.getItem('ayuscout_user')
       if (stored) {
         const u = JSON.parse(stored)
         setCurrentUser(u)
-        // Force admin to their dedicated panel immediately
         if (u?.role === 'admin') setPage('admin-help')
       }
     } catch { /* ignore */ }
@@ -79,7 +79,6 @@ export default function App() {
   const handleLogin = (user) => {
     localStorage.setItem('ayuscout_user', JSON.stringify(user))
     setCurrentUser(user)
-    // Admin always lands on — and stays on — the Admin Panel
     setPage(user.role === 'admin' ? 'admin-help' : 'dashboard')
   }
 
@@ -89,25 +88,19 @@ export default function App() {
     setPage('dashboard')
   }
 
-  // Guard: admin can only navigate to admin-help
+  // Admin can only visit admin-help
   const handleNavigate = (target) => {
-    if (isAdmin && target !== 'admin-help') return   // silently block
+    if (isAdmin && target !== 'admin-help') return
     setPage(target)
   }
 
-  // Don't render anything until we've checked localStorage
   if (!authChecked) return null
 
-  // Show hero cinematic first (8-second auto-play intro)
+  // Cinematic intro (first load)
   if (!heroShown) {
-    return (
-      <HeroCinematic
-        onEnter={() => setHeroShown(true)}
-      />
-    )
+    return <HeroCinematic onEnter={() => setHeroShown(true)} />
   }
 
-  // Show login page if not authenticated
   if (!currentUser) {
     return <Login onLogin={handleLogin} />
   }
@@ -115,7 +108,8 @@ export default function App() {
   const PageComponent = pages[page] || (isAdmin ? AdminHelpDashboard : Dashboard)
 
   return (
-    <>
+    // SettingsProvider wraps everything so settings are globally available
+    <SettingsProvider userId={currentUser?.id}>
       <Sidebar
         activePage={page}
         onNavigate={handleNavigate}
@@ -126,11 +120,15 @@ export default function App() {
         <Header title={titles[page] || page} onNavigate={handleNavigate} />
         <div className="page-content" key={page}>
           <div className="fade-in">
-            <PageComponent openModal={setModal} onNavigate={handleNavigate} />
+            <PageComponent
+              openModal={setModal}
+              onNavigate={handleNavigate}
+              currentUser={currentUser}
+            />
           </div>
         </div>
       </main>
       {modal && <Modal {...modal} onClose={() => setModal(null)} />}
-    </>
+    </SettingsProvider>
   )
 }

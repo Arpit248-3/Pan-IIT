@@ -137,12 +137,22 @@ export default function Login({ onLogin }) {
     setLoading(true)
     try {
       if (mode === 'register') {
+        if (!terms) return shake_('Please accept the Terms of Service to continue')
         const r = await fetch(`${API_BASE}/api/auth/register`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, password }),
+          body: JSON.stringify({
+            name,
+            email,
+            password,
+            role: role || 'safety_officer',
+            department: dept || 'Pharmacovigilance',
+            organization: org || '',
+          }),
         })
         const d = await r.json()
-        if (!r.ok || d.error) return shake_(d.error || 'Registration failed')
+        // FastAPI returns errors as { detail: "..." }
+        const errMsg = d.detail || d.error || d.message
+        if (!r.ok || errMsg) return shake_(errMsg || 'Registration failed')
         setSuccess('Account created! Logging you in…')
         setTimeout(() => onLogin(d.user), 800)
       } else {
@@ -151,7 +161,8 @@ export default function Login({ onLogin }) {
           body: JSON.stringify({ email, password }),
         })
         const d = await r.json()
-        if (!r.ok || d.error) return shake_(d.error || 'Invalid credentials')
+        const errMsg = d.detail || d.error || d.message
+        if (!r.ok || errMsg) return shake_(errMsg || 'Invalid credentials')
         onLogin(d.user)
       }
     } catch { shake_('Cannot connect to server') }

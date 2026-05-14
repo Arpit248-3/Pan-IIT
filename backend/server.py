@@ -30,12 +30,19 @@ from database import (
     get_dashboard_stats, get_all_intake,
     create_user, get_user_by_email, touch_last_login, verify_password,
     create_help_query, get_all_help_queries, get_user_help_queries, answer_help_query,
-    create_project, get_all_projects, get_all_signals, get_trends_data
+    create_project, get_all_projects, get_all_signals, get_trends_data,
+    get_notifications, create_notification
 )
 from crawler import run_simulated_crawler, run_live_agentic_crawler, generate_scraper_config
 from core.e2b_export import generate_e2b_xml, generate_e2b_r2_xml
 from core.vector_store import get_vector_store
 from core.webhook_alerter import get_recent_alerts
+# ── Modular route registrations ──────────────────────────────
+from routes.settings_routes import router as settings_router
+from routes.user_routes import router as user_router
+from routes.notification_routes import router as notification_router
+from routes.alert_routes import router as alert_router
+from routes.auth_routes import router as auth_ext_router
 
 
 app = FastAPI(
@@ -54,6 +61,13 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=False,
 )
+
+# ── Register modular routers ──────────────────────────────────
+app.include_router(settings_router)
+app.include_router(user_router)
+app.include_router(notification_router)
+app.include_router(alert_router)
+app.include_router(auth_ext_router)
 
 
 # ============================================================
@@ -87,6 +101,9 @@ class RegisterRequest(BaseModel):
     name: str
     email: str
     password: str
+    role: str = 'safety_officer'
+    department: str = 'Pharmacovigilance'
+    organization: str = ''
 
 class LoginRequest(BaseModel):
     email: str
@@ -217,6 +234,10 @@ async def analyze_case(report: CaseReport):
         "pubmed_link": doctor_verdict.get("pubmed_search_link", ""),
         "extraction_attempts": result.get("extraction_attempts", 0),
         "who_umc_details": doctor_verdict.get("who_umc_details", {}),
+        # --- NEW DDI FIELDS ---
+        "alternative_cause_likely": doctor_verdict.get("alternative_cause_likely", False),
+        "ddi_risk_level": doctor_verdict.get("ddi_risk_level", "None"),
+        "interaction_reasoning": doctor_verdict.get("interaction_reasoning", "No interaction analysis available.")
     }
     
     print(f"[ANALYZE-CASE] Response sent: causality={response['causality']}, confidence={response['confidence']}")
@@ -554,10 +575,19 @@ async def health_check():
 # ============================================================
 @app.post("/api/auth/register")
 async def auth_register(req: RegisterRequest):
-    """Register a new user account."""
+    """Register a new user account (with role, department, organization)."""
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    user, error = create_user(req.name, req.email, req.password)
+    # Map login-form role IDs to DB role values
+    role_map = {
+        'safety_officer':   'safety_officer',
+        'pv_manager':       'analyst',
+        'medical_reviewer': 'reviewer',
+        'administrator':    'admin',
+    }
+    db_role = role_map.get(req.role, 'user')
+    dept = req.department or req.organization or 'Pharmacovigilance'
+    user, error = create_user(req.name, req.email, req.password, db_role, dept, 'Active')
     if error:
         raise HTTPException(status_code=400, detail=error)
     return {"status": "success", "user": user}
@@ -578,10 +608,12 @@ async def auth_login(req: LoginRequest):
     return {
         "status": "success",
         "user": {
-            "id": user["id"],
-            "name": user["name"],
-            "email": user["email"],
-            "role": user["role"],
+            "id":         user["id"],
+            "name":       user["name"],
+            "email":      user["email"],
+            "role":       user["role"],
+            "department": user.get("department", "Pharmacovigilance"),
+            "status":     user.get("status", "Active"),
         }
     }
 

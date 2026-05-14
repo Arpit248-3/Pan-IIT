@@ -3,7 +3,7 @@ import {
   MdArrowUpward, MdDownload, MdRefresh, MdClose,
   MdTimeline, MdVisibility, MdSmartToy, MdBiotech,
   MdFormatQuote, MdLabel, MdPsychology, MdOpenInNew,
-  MdFilterList, MdTrendingUp
+  MdFilterList, MdTrendingUp, MdScience
 } from 'react-icons/md'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -31,9 +31,11 @@ function confidenceStyle(val) {
 function ConfidencePill({ value }) {
   const s = confidenceStyle(value)
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 10px',
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', padding: '3px 10px',
       borderRadius: 12, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
-      background: s.bg, border: `1px solid ${s.border}`, color: s.color }}>
+      background: s.bg, border: `1px solid ${s.border}`, color: s.color
+    }}>
       {s.label}
     </span>
   )
@@ -43,8 +45,10 @@ function ConfidencePill({ value }) {
 function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   return (
-    <div style={{ padding: '10px 14px', background: 'var(--navy)', color: '#fff',
-      borderRadius: 8, fontSize: 12, boxShadow: '0 8px 24px rgba(0,0,0,.3)', border: 'none' }}>
+    <div style={{
+      padding: '10px 14px', background: 'var(--navy)', color: '#fff',
+      borderRadius: 8, fontSize: 12, boxShadow: '0 8px 24px rgba(0,0,0,.3)', border: 'none'
+    }}>
       <div style={{ fontWeight: 700, marginBottom: 4 }}>{label}</div>
       <div style={{ color: '#60a5fa' }}>Signals: <strong>{payload[0].value}</strong></div>
     </div>
@@ -67,6 +71,27 @@ function TraceabilityDrawer({ signal, onClose }) {
     { label: 'Severity', value: signal.severity, color: sevColors[signal.severity] === 'danger' ? '#EF4444' : '#3B82F6', bg: 'rgba(59,130,246,.1)' },
   ]
 
+  // --- DDI & Concomitant Extraction Logic ---
+  let concomitant = [];
+  let ddiRisk = 'None';
+  let altCause = false;
+  let interactionReasoning = '';
+
+  try {
+    const docVerdict = typeof signal.doctor_verdict === 'string' ? JSON.parse(signal.doctor_verdict) : (signal.doctor_verdict || {});
+    const extractedData = typeof signal.extracted_data === 'string' ? JSON.parse(signal.extracted_data) : (signal.extracted_data || signal.clinical_data || {});
+
+    concomitant = extractedData.concomitant_drugs || [];
+    ddiRisk = docVerdict.ddi_risk_level || signal.ddi_risk_level || 'None';
+    altCause = docVerdict.alternative_cause_likely || signal.alternative_cause_likely || false;
+    interactionReasoning = docVerdict.interaction_reasoning || signal.interaction_reasoning || '';
+  } catch (e) { }
+
+  // Ensure UI gracefully hides DDI section if empty
+  const hasConcomitant = Array.isArray(concomitant)
+    ? concomitant.length > 0 && concomitant[0] !== 'None' && concomitant[0] !== ''
+    : typeof concomitant === 'string' && concomitant.trim() !== '' && concomitant !== 'None';
+
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 500, display: 'flex', alignItems: 'stretch', justifyContent: 'flex-end' }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}>
@@ -74,12 +99,16 @@ function TraceabilityDrawer({ signal, onClose }) {
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(10,25,47,.45)', backdropFilter: 'blur(4px)' }}
         onClick={onClose} />
       {/* Drawer */}
-      <div style={{ position: 'relative', width: 520, background: 'var(--surface)', boxShadow: '-8px 0 32px rgba(0,0,0,.12)',
-        display: 'flex', flexDirection: 'column', animation: 'slideInRight .25s ease', overflow: 'hidden' }}>
+      <div style={{
+        position: 'relative', width: 520, background: 'var(--surface)', boxShadow: '-8px 0 32px rgba(0,0,0,.12)',
+        display: 'flex', flexDirection: 'column', animation: 'slideInRight .25s ease', overflow: 'hidden'
+      }}>
 
         {/* Header */}
-        <div style={{ padding: '20px 24px 16px', borderBottom: '1px solid var(--border)',
-          display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <div style={{
+          padding: '20px 24px 16px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between'
+        }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
               <MdSmartToy size={20} style={{ color: '#8B5CF6' }} />
@@ -89,8 +118,10 @@ function TraceabilityDrawer({ signal, onClose }) {
               SIG-{String(signal.id).padStart(3, '0')} · {signal.drug} → {signal.event}
             </div>
           </div>
-          <button onClick={onClose} style={{ display: 'flex', padding: 4, borderRadius: 4,
-            color: 'var(--muted)', background: 'none', border: 'none', cursor: 'pointer', transition: 'color .2s' }}
+          <button onClick={onClose} style={{
+            display: 'flex', padding: 4, borderRadius: 4,
+            color: 'var(--muted)', background: 'none', border: 'none', cursor: 'pointer', transition: 'color .2s'
+          }}
             onMouseEnter={e => e.currentTarget.style.color = 'var(--danger)'}
             onMouseLeave={e => e.currentTarget.style.color = 'var(--muted)'}>
             <MdClose size={20} />
@@ -107,13 +138,17 @@ function TraceabilityDrawer({ signal, onClose }) {
               { label: 'Confidence', val: signal.confidence, custom: true },
               { label: 'Onset', val: signal.time_to_onset || 'N/A' },
             ].map((s, i) => (
-              <div key={i} style={{ padding: '12px 14px', background: 'var(--bg)', borderRadius: 'var(--radius)',
-                border: '1px solid var(--border)', textAlign: 'center' }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
-                  letterSpacing: '.05em', marginBottom: 6 }}>{s.label}</div>
+              <div key={i} style={{
+                padding: '12px 14px', background: 'var(--bg)', borderRadius: 'var(--radius)',
+                border: '1px solid var(--border)', textAlign: 'center'
+              }}>
+                <div style={{
+                  fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
+                  letterSpacing: '.05em', marginBottom: 6
+                }}>{s.label}</div>
                 {s.custom ? <ConfidencePill value={s.val} />
                   : s.badge ? <span className={`badge ${s.badge}`}>{s.val}</span>
-                  : <div style={{ fontSize: 14, fontWeight: 700 }}>{s.val}</div>}
+                    : <div style={{ fontSize: 14, fontWeight: 700 }}>{s.val}</div>}
               </div>
             ))}
           </div>
@@ -122,12 +157,16 @@ function TraceabilityDrawer({ signal, onClose }) {
           <div style={{ marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
               <MdFormatQuote size={16} style={{ color: '#8B5CF6' }} />
-              <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
-                letterSpacing: '.05em' }}>Original Patient Text</span>
+              <span style={{
+                fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
+                letterSpacing: '.05em'
+              }}>Original Patient Text</span>
             </div>
-            <div style={{ padding: '14px 18px', background: '#181825', borderRadius: 'var(--radius)',
+            <div style={{
+              padding: '14px 18px', background: '#181825', borderRadius: 'var(--radius)',
               borderLeft: '3px solid #8B5CF6', fontSize: 13, lineHeight: 1.7,
-              color: '#cdd6f4', fontFamily: "'JetBrains Mono',Consolas,monospace" }}>
+              color: '#cdd6f4', fontFamily: "'JetBrains Mono',Consolas,monospace"
+            }}>
               {signal.raw_text || signal.source_text || `Patient reported experiencing ${signal.event} after taking ${signal.drug}. Time to onset: ${signal.time_to_onset || 'unknown'}.`}
             </div>
           </div>
@@ -136,14 +175,18 @@ function TraceabilityDrawer({ signal, onClose }) {
           <div style={{ marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
               <MdLabel size={16} style={{ color: '#10B981' }} />
-              <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
-                letterSpacing: '.05em' }}>Extracted Entities</span>
+              <span style={{
+                fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
+                letterSpacing: '.05em'
+              }}>Extracted Entities</span>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {entities.map((e, i) => (
-                <div key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+                <div key={i} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
                   padding: '6px 14px', borderRadius: 20, background: e.bg,
-                  border: `1px solid ${e.color}22`, fontSize: 12, fontWeight: 600 }}>
+                  border: `1px solid ${e.color}22`, fontSize: 12, fontWeight: 600
+                }}>
                   <span style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase' }}>{e.label}:</span>
                   <span style={{ color: e.color, fontWeight: 700 }}>{e.value || 'N/A'}</span>
                 </div>
@@ -155,28 +198,65 @@ function TraceabilityDrawer({ signal, onClose }) {
           <div style={{ marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
               <MdPsychology size={16} style={{ color: '#F59E0B' }} />
-              <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
-                letterSpacing: '.05em' }}>LLM Reasoning Engine</span>
+              <span style={{
+                fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
+                letterSpacing: '.05em'
+              }}>LLM Reasoning Engine</span>
             </div>
-            <div style={{ padding: '14px 18px', background: 'rgba(245,158,11,.06)',
+            <div style={{
+              padding: '14px 18px', background: 'rgba(245,158,11,.06)',
               border: '1px solid rgba(245,158,11,.15)', borderRadius: 'var(--radius)',
-              fontSize: 13, lineHeight: 1.7, color: 'var(--text)' }}>
+              fontSize: 13, lineHeight: 1.7, color: 'var(--text)'
+            }}>
               {signal.reasoning || `Flagged because temporal relationship (${signal.time_to_onset || 'reported'}) and adverse event "${signal.event}" match MedDRA standard for ${signal.drug}. WHO-UMC assessment: ${signal.causality}.`}
             </div>
           </div>
+
+          {/* ── Section 4b: DDI & Concomitant Analysis ──────── */}
+          {hasConcomitant && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <MdScience size={16} style={{ color: '#0ea5e9' }} />
+                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>
+                  DDI & Concomitant Analysis
+                </span>
+              </div>
+
+              {ddiRisk === 'High' ? (
+                <div style={{ padding: '14px 18px', background: 'rgba(239,68,68,.06)', border: '1px solid rgba(239,68,68,.15)', borderRadius: 'var(--radius)', fontSize: 13, lineHeight: 1.7, color: 'var(--text)' }}>
+                  <strong style={{ color: '#EF4444' }}>⚠️ High Drug-Drug Interaction Risk Detected</strong><br />
+                  <span style={{ color: 'var(--muted)' }}>{interactionReasoning}</span>
+                </div>
+              ) : altCause ? (
+                <div style={{ padding: '14px 18px', background: 'rgba(245,158,11,.06)', border: '1px solid rgba(245,158,11,.15)', borderRadius: 'var(--radius)', fontSize: 13, lineHeight: 1.7, color: 'var(--text)' }}>
+                  <strong style={{ color: '#F59E0B' }}>🔄 Alternative Cause Identified: Concomitant Drug</strong><br />
+                  <span style={{ color: 'var(--muted)' }}>{interactionReasoning}</span>
+                </div>
+              ) : (
+                <div style={{ padding: '14px 18px', background: 'rgba(16,185,129,.06)', border: '1px solid rgba(16,185,129,.15)', borderRadius: 'var(--radius)', fontSize: 13, lineHeight: 1.7, color: 'var(--text)' }}>
+                  <strong style={{ color: '#10B981' }}>✅ No Significant Concomitant Interference</strong><br />
+                  <span style={{ color: 'var(--muted)' }}>{interactionReasoning}</span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ── Section 5: WHO-UMC Factors ──────────────────── */}
           {factors.length > 0 && (
             <div style={{ marginBottom: 20 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                 <MdBiotech size={16} style={{ color: '#3B82F6' }} />
-                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
-                  letterSpacing: '.05em' }}>WHO-UMC Assessment Factors</span>
+                <span style={{
+                  fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
+                  letterSpacing: '.05em'
+                }}>WHO-UMC Assessment Factors</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {factors.map((f, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 14px',
-                    background: 'var(--bg)', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13 }}>
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 14px',
+                    background: 'var(--bg)', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13
+                  }}>
                     <span style={{ color: 'var(--blue)', fontWeight: 700, flexShrink: 0 }}>{i + 1}.</span>
                     <span>{f}</span>
                   </div>
@@ -188,17 +268,21 @@ function TraceabilityDrawer({ signal, onClose }) {
           {/* ── PubMed Link ────────────────────────────────── */}
           {signal.pubmed_link && signal.pubmed_link !== 'N/A' && (
             <a href={signal.pubmed_link} target="_blank" rel="noopener noreferrer"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px',
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px',
                 background: 'var(--blue-bg)', border: '1px solid rgba(0,123,255,.2)', borderRadius: 'var(--radius)',
-                color: 'var(--blue)', fontSize: 13, fontWeight: 600, textDecoration: 'none', transition: 'all .2s' }}>
+                color: 'var(--blue)', fontSize: 13, fontWeight: 600, textDecoration: 'none', transition: 'all .2s'
+              }}>
               <MdOpenInNew size={14} /> Verify on PubMed →
             </a>
           )}
         </div>
 
         {/* Footer */}
-        <div style={{ padding: '14px 24px', borderTop: '1px solid var(--border)',
-          display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div style={{
+          padding: '14px 24px', borderTop: '1px solid var(--border)',
+          display: 'flex', gap: 8, justifyContent: 'flex-end'
+        }}>
           <button className="btn btn-ghost" onClick={onClose}>Close</button>
           <button className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: 6 }}
             onClick={() => { onClose(); window.__exportE2B?.(signal.id) }}>
@@ -216,11 +300,11 @@ function TraceabilityDrawer({ signal, onClose }) {
    ══════════════════════════════════════════════════════════════ */
 export default function Alerts({ openModal }) {
   const [liveSignals, setLiveSignals] = useState([])
-  const [loading, setLoading]         = useState(true)
-  const [trendData, setTrendData]     = useState([])
+  const [loading, setLoading] = useState(true)
+  const [trendData, setTrendData] = useState([])
   const [exportingId, setExportingId] = useState(null)
   const [drawerSignal, setDrawerSignal] = useState(null)
-  const [sevFilter, setSevFilter]     = useState('All')
+  const [sevFilter, setSevFilter] = useState('All')
 
   /* ── Fetch live signals ─────────────────────────────────────── */
   const fetchLiveSignals = async () => {
@@ -266,9 +350,13 @@ export default function Alerts({ openModal }) {
       a.download = `E2B_ICSR_${recordId}.xml`
       document.body.appendChild(a); a.click(); a.remove()
       window.URL.revokeObjectURL(url)
-    } catch { openModal?.({ title:'Export Failed',
-      children:<p style={{color:'var(--danger)'}}>Failed to export E2B XML.</p>,
-      footer:<button className="btn btn-primary" onClick={()=>openModal(null)}>OK</button> }) }
+    } catch {
+      openModal?.({
+        title: 'Export Failed',
+        children: <p style={{ color: 'var(--danger)' }}>Failed to export E2B XML.</p>,
+        footer: <button className="btn btn-primary" onClick={() => openModal(null)}>OK</button>
+      })
+    }
     setExportingId(null)
   }
   // Expose for drawer
@@ -292,8 +380,8 @@ export default function Alerts({ openModal }) {
 
   /* ── KPIs ────────────────────────────────────────────────── */
   const criticalCount = liveSignals.filter(s => s.severity === 'Critical').length
-  const highCount     = liveSignals.filter(s => s.severity === 'High').length
-  const certainCount  = liveSignals.filter(s => (s.causality || '').toLowerCase().includes('certain')).length
+  const highCount = liveSignals.filter(s => s.severity === 'High').length
+  const certainCount = liveSignals.filter(s => (s.causality || '').toLowerCase().includes('certain')).length
 
   return (
     <>
@@ -317,11 +405,11 @@ export default function Alerts({ openModal }) {
           children: <><div className="form-group"><label className="form-label">Alert Name</label>
             <input className="form-input" placeholder="Enter alert name" /></div>
             <div className="form-group"><label className="form-label">Condition</label>
-            <select className="form-input"><option>PRR Score exceeds threshold</option><option>Sentiment spike</option></select></div>
+              <select className="form-input"><option>PRR Score exceeds threshold</option><option>Sentiment spike</option></select></div>
             <div className="form-group"><label className="form-label">Threshold</label>
-            <input className="form-input" type="number" placeholder="e.g. 3.0" /></div></>,
-          footer: <><button className="btn btn-ghost" onClick={()=>openModal(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={()=>openModal(null)}>Create Rule</button></>
+              <input className="form-input" type="number" placeholder="e.g. 3.0" /></div></>,
+          footer: <><button className="btn btn-ghost" onClick={() => openModal(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={() => openModal(null)}>Create Rule</button></>
         })}>+ Alert Rule</button>
       </div>
 
@@ -381,8 +469,10 @@ export default function Alerts({ openModal }) {
       <div className="card">
         <div className="card-header">
           <span className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10B981',
-              display: 'inline-block', animation: 'pulse 2s infinite' }} />
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%', background: '#10B981',
+              display: 'inline-block', animation: 'pulse 2s infinite'
+            }} />
             Live AI Signals ({filtered.length})
           </span>
           <span style={{ fontSize: 12, color: 'var(--muted)' }}>AyuScout V2 Intelligence Vault</span>
@@ -413,7 +503,7 @@ export default function Alerts({ openModal }) {
               <tbody>
                 {filtered.map(s => (
                   <tr key={s.id}>
-                    <td><strong style={{ color: 'var(--blue)' }}>SIG-{String(s.id).padStart(3,'0')}</strong></td>
+                    <td><strong style={{ color: 'var(--blue)' }}>SIG-{String(s.id).padStart(3, '0')}</strong></td>
                     <td style={{ fontWeight: 600 }}>{s.drug}</td>
                     <td>{s.event}</td>
                     <td><span className={`badge badge-${sevColors[s.severity] || 'neutral'}`}>{s.causality}</span></td>

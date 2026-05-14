@@ -256,3 +256,211 @@ tr:hover td{background:rgba(0,123,255,.02)}
 .admin-drawer-prev-answer{margin:0 20px 4px;padding:12px 14px;background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.2);border-radius:8px;font-size:13px;line-height:1.6;color:var(--text)}
 .admin-drawer .help-ask-textarea{margin:0 20px;width:calc(100% - 40px)}
 .admin-drawer-footer{padding:16px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;margin-top:auto}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   SKELETON LOADERS — shimmer animation for loading states
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@keyframes shimmer {
+  0%   { background-position: -400px 0 }
+  100% { background-position: 400px 0 }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--border) 25%, rgba(226,232,240,.4) 50%, var(--border) 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: 4px;
+  display: block;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   SETTINGS PAGE HELPERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.settings-tabs {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+  overflow-x: auto;
+  flex-wrap: nowrap !important;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.settings-tabs::-webkit-scrollbar { display: none }
+.settings-tabs .tab { white-space: nowrap }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   DARK MODE — toggled via body.dark-mode
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+body.dark-mode {
+  --bg: #0F172A;
+  --surface: #1E293B;
+  --border: #334155;
+  --text: #F1F5F9;
+  --text2: #94A3B8;
+  --muted: #64748B;
+  --blue-bg: rgba(0,123,255,.18);
+  --success-bg: rgba(16,185,129,.15);
+  --warn-bg: rgba(245,158,11,.15);
+  --danger-bg: rgba(239,68,68,.15);
+  --info-bg: rgba(59,130,246,.15);
+  --shadow: 0 1px 3px rgba(0,0,0,.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.25);
+}
+body.dark-mode .form-input,
+body.dark-mode .filter-select {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+body.dark-mode .filter-select {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%2394a3b8' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+}
+body.dark-mode .top-header { background: var(--surface) }
+body.dark-mode .search-bar { background: var(--bg); border-color: var(--border) }
+body.dark-mode .modal      { background: var(--surface) }
+body.dark-mode .skeleton {
+  background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   COMPACT TABLES — toggled via body.compact-tables
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+body.compact-tables td  { padding: 8px 12px }
+body.compact-tables th  { padding: 7px 12px }
+body.compact-tables .kpi-card { padding: 14px 16px }
+body.compact-tables .kpi-value { font-size: 22px }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   RESPONSIVE — Tablet (≤1024px) + Mobile (≤768px)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/* ── Tablet ─────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .sidebar { transform: translateX(-100%); z-index: 200 }
+  .sidebar.open { transform: translateX(0); box-shadow: 4px 0 24px rgba(0,0,0,.3) }
+  .main-content { margin-left: 0 !important }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr) }
+  .grid-2, .grid-3 { grid-template-columns: 1fr }
+  .search-bar { width: 220px }
+  /* User management: table scrollable */
+  .card table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch }
+}
+
+/* ── Mobile (≤768px) ─────────────────────────────────── */
+@media (max-width: 768px) {
+  :root { --header-h: 56px }
+  .page-content { padding: 16px }
+  .kpi-grid { grid-template-columns: 1fr 1fr; gap: 12px }
+  .kpi-card { padding: 14px }
+  .kpi-value { font-size: 22px }
+  .page-title { font-size: 16px }
+
+  /* Header — hide search bar, keep icons */
+  .search-bar { display: none }
+  .top-header { padding: 0 16px }
+
+  /* Filter bar wraps on mobile */
+  .filter-bar {
+    gap: 8px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 6px;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .filter-bar::-webkit-scrollbar { display: none }
+  .filter-select, .filter-bar .form-input { flex-shrink: 0 }
+
+  /* Tabs horizontal scroll */
+  .tabs, .settings-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  /* Cards full width */
+  .grid-2, .grid-3 { grid-template-columns: 1fr }
+
+  /* User management — card layout on mobile */
+  .card table thead { display: none }
+  .card table tbody tr {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 10px;
+    padding: 12px;
+    background: var(--surface);
+  }
+  .card table tbody td {
+    border: none;
+    padding: 4px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+  }
+  .card table tbody td::before {
+    content: attr(data-label);
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    min-width: 72px;
+  }
+
+  /* Modal full width on mobile */
+  .modal { width: 100%; max-width: 100%; margin: 0; border-radius: 16px 16px 0 0; align-self: flex-end }
+  .modal-overlay { align-items: flex-end }
+
+  /* Notifications */
+  .notif-item { padding: 10px 12px }
+
+  /* Help page */
+  .help-guides-grid { grid-template-columns: 1fr }
+  .help-drawer, .admin-drawer { width: 100% }
+  .admin-stats-row { grid-template-columns: 1fr }
+
+  /* Settings actions row */
+  .settings-actions { flex-wrap: wrap; justify-content: stretch }
+  .settings-actions .btn { flex: 1; justify-content: center }
+}
+
+/* ── Hamburger menu button — appears on tablet/mobile ── */
+.sidebar-toggle {
+  display: none;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  color: var(--text2);
+  transition: all .2s;
+  margin-right: 8px;
+}
+.sidebar-toggle:hover { background: var(--blue-bg); color: var(--blue) }
+@media (max-width: 1024px) { .sidebar-toggle { display: flex } }
+
+
+@keyframes slideInRight { from { transform: translateX(100%); opacity: 0 } to { transform: translateX(0); opacity: 1 } }

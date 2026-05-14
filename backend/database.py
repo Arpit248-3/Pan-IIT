@@ -15,7 +15,7 @@ import json
 import hashlib
 import secrets
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, Float
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
@@ -76,7 +76,10 @@ class User(Base):
     name          = Column(String(200), nullable=False)
     email         = Column(String(200), nullable=False, unique=True)
     password_hash = Column(String(300), nullable=False)
-    role          = Column(String(50), default='user')   # 'user' | 'admin'
+    role          = Column(String(50), default='user')   # 'user' | 'admin' | 'analyst' | 'reviewer' | 'safety_officer'
+    department    = Column(String(100), default='Pharmacovigilance')
+    status        = Column(String(50), default='Active')  # 'Active' | 'Inactive'
+    deleted_at    = Column(DateTime, nullable=True)        # soft-delete timestamp
     created_at    = Column(DateTime, default=datetime.now)
     last_login    = Column(DateTime, nullable=True)
 
@@ -112,6 +115,73 @@ class Project(Base):
     created_at          = Column(DateTime, default=datetime.now)
 
 
+class AppSettings(Base):
+    """Per-user application settings (structured columns for queryability)."""
+    __tablename__ = "app_settings"
+
+    id                     = Column(Integer, primary_key=True, autoincrement=True)
+    user_id                = Column(Integer, nullable=False, unique=True)  # one row per user
+    # General
+    org_name               = Column(String(200), default='AyuScout Pharma')
+    contact_email          = Column(String(200), default='admin@ayuscout.ai')
+    timezone               = Column(String(100), default='Asia/Kolkata (UTC+5:30)')
+    dark_mode              = Column(Boolean, default=False)
+    compact_tables         = Column(Boolean, default=True)
+    show_kpi_trends        = Column(Boolean, default=True)
+    # Notifications
+    notif_critical_alerts  = Column(Boolean, default=True)
+    notif_daily_digest     = Column(Boolean, default=True)
+    notif_report_reminders = Column(Boolean, default=True)
+    notif_sentiment_spike  = Column(Boolean, default=True)
+    notif_weekly_summary   = Column(Boolean, default=False)
+    webhook_url            = Column(String(500), default='')
+    # AI Configuration
+    llm_model              = Column(String(100), default='llama3.2:1b')
+    sensitivity            = Column(String(50), default='High')
+    prr_threshold          = Column(Float, default=2.0)
+    min_case_count         = Column(Integer, default=3)
+    auto_signal            = Column(Boolean, default=True)
+    sentiment_ai           = Column(Boolean, default=True)
+    duplicate_detect       = Column(Boolean, default=True)
+    # Security
+    two_fa                 = Column(Boolean, default=True)
+    session_timeout        = Column(String(50), default='30 minutes')
+    audit_log_enabled      = Column(Boolean, default=True)
+    ip_whitelist           = Column(Boolean, default=False)
+    updated_at             = Column(DateTime, default=datetime.now)
+
+
+class Notification(Base):
+    """System and AI-generated notifications per user."""
+    __tablename__ = "notifications"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    user_id    = Column(Integer, nullable=True)   # None = global / all users
+    title      = Column(String(300), nullable=False)
+    desc       = Column(Text, nullable=True)
+    icon       = Column(String(50), default='info')   # 'critical' | 'warning' | 'info'
+    type       = Column(String(50), default='system') # 'signal' | 'alert' | 'system' | 'user' | 'crawler' | 'security'
+    category   = Column(String(100), default='System')# 'Critical Alert' | 'AI Detection' | 'User Management' | 'Crawler' | 'System' | 'Security'
+    priority   = Column(String(20), default='normal') # 'urgent' | 'normal' | 'low'
+    unread     = Column(Boolean, default=True)
+    action_url = Column(String(300), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    read_at    = Column(DateTime, nullable=True)
+
+
+class AuditLog(Base):
+    """Immutable audit trail of all significant user actions."""
+    __tablename__ = "audit_logs"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    user_id       = Column(Integer, nullable=True)
+    user_email    = Column(String(200), nullable=True)
+    action        = Column(String(300), nullable=False)  # e.g. 'settings.update', 'user.create'
+    metadata_json = Column(Text, default='{}')           # JSON blob of changed values
+    ip_address    = Column(String(50), nullable=True)
+    created_at    = Column(DateTime, default=datetime.now)
+
+
 # ============================================================
 # PASSWORD HELPERS
 # ============================================================
@@ -138,18 +208,20 @@ def init_db():
     Base.metadata.create_all(engine)
     print("📊 Database initialized (SQLAlchemy ORM)")
 
-    # Backward-compatible migration: add schedule_interval if existing DB lacks it
-    try:
-        with engine.connect() as conn:
-            conn.execute(
-                __import__('sqlalchemy').text(
-                    "ALTER TABLE projects ADD COLUMN schedule_interval VARCHAR(50) DEFAULT 'Daily'"
-                )
-            )
-            conn.commit()
-            print("📋 Migration applied: projects.schedule_interval column added")
-    except Exception:
-        pass  # Column already exists — safe to ignore
+    # Backward-compatible migrations
+    _safe_migrations = [
+        "ALTER TABLE projects ADD COLUMN schedule_interval VARCHAR(50) DEFAULT 'Daily'",
+        "ALTER TABLE users ADD COLUMN department VARCHAR(100) DEFAULT 'Pharmacovigilance'",
+        "ALTER TABLE users ADD COLUMN status VARCHAR(50) DEFAULT 'Active'",
+        "ALTER TABLE users ADD COLUMN deleted_at DATETIME",
+    ]
+    with engine.connect() as conn:
+        for sql in _safe_migrations:
+            try:
+                conn.execute(__import__('sqlalchemy').text(sql))
+                conn.commit()
+            except Exception:
+                pass  # Column already exists — safe to ignore
 
     # Seed admin
     session = SessionLocal()
@@ -161,6 +233,8 @@ def init_db():
                 email='admin@ayuscout.ai',
                 password_hash=hash_password('Admin@123'),
                 role='admin',
+                department='Administration',
+                status='Active',
                 created_at=datetime.now()
             )
             session.add(admin)
@@ -606,15 +680,30 @@ def _time_ago(dt):
 # USER CRUD
 # ============================================================
 
-def create_user(name: str, email: str, password: str, role: str = 'user'):
+def create_user(name: str, email: str, password: str, role: str = 'user',
+                department: str = 'Pharmacovigilance', status: str = 'Active'):
     session = SessionLocal()
     try:
         if session.query(User).filter(User.email == email).first():
             return None, 'Email already registered'
-        user = User(name=name, email=email, password_hash=hash_password(password), role=role)
+        user = User(
+            name=name, email=email,
+            password_hash=hash_password(password),
+            role=role,
+        )
+        # Set optional fields only if the columns exist on the model
+        if hasattr(user, 'department'):
+            user.department = department
+        if hasattr(user, 'status'):
+            user.status = status
         session.add(user)
         session.commit()
-        return {'id': user.id, 'name': user.name, 'email': user.email, 'role': user.role}, None
+        return {
+            'id': user.id, 'name': user.name, 'email': user.email,
+            'role': user.role,
+            'department': getattr(user, 'department', department),
+            'status': getattr(user, 'status', status),
+        }, None
     except Exception as e:
         session.rollback()
         return None, str(e)
@@ -627,8 +716,12 @@ def get_user_by_email(email: str):
         u = session.query(User).filter(User.email == email).first()
         if not u:
             return None
-        return {'id': u.id, 'name': u.name, 'email': u.email,
-                'password_hash': u.password_hash, 'role': u.role}
+        return {
+            'id': u.id, 'name': u.name, 'email': u.email,
+            'password_hash': u.password_hash, 'role': u.role,
+            'department': getattr(u, 'department', 'Pharmacovigilance') or 'Pharmacovigilance',
+            'status': getattr(u, 'status', 'Active') or 'Active',
+        }
     finally:
         session.close()
 
@@ -827,5 +920,361 @@ def get_trends_data(days: int = 14):
                     buckets[d]['high'] += 1
 
         return list(buckets.values())
+    finally:
+        session.close()
+
+
+# ============================================================
+# APP SETTINGS CRUD
+# ============================================================
+
+def _serialize_settings(s):
+    return {
+        'user_id': s.user_id,
+        'org_name': s.org_name,
+        'contact_email': s.contact_email,
+        'timezone': s.timezone,
+        'dark_mode': bool(s.dark_mode),
+        'compact_tables': bool(s.compact_tables),
+        'show_kpi_trends': bool(s.show_kpi_trends),
+        'notif_critical_alerts': bool(s.notif_critical_alerts),
+        'notif_daily_digest': bool(s.notif_daily_digest),
+        'notif_report_reminders': bool(s.notif_report_reminders),
+        'notif_sentiment_spike': bool(s.notif_sentiment_spike),
+        'notif_weekly_summary': bool(s.notif_weekly_summary),
+        'webhook_url': s.webhook_url or '',
+        'llm_model': s.llm_model,
+        'sensitivity': s.sensitivity,
+        'prr_threshold': float(s.prr_threshold or 2.0),
+        'min_case_count': int(s.min_case_count or 3),
+        'auto_signal': bool(s.auto_signal),
+        'sentiment_ai': bool(s.sentiment_ai),
+        'duplicate_detect': bool(s.duplicate_detect),
+        'two_fa': bool(s.two_fa),
+        'session_timeout': s.session_timeout,
+        'audit_log_enabled': bool(s.audit_log_enabled),
+        'ip_whitelist': bool(s.ip_whitelist),
+        'updated_at': s.updated_at.isoformat() if s.updated_at else None,
+    }
+
+
+def get_settings(user_id: int):
+    """Get settings for a user, creating defaults if they don't exist."""
+    session = SessionLocal()
+    try:
+        s = session.query(AppSettings).filter(AppSettings.user_id == user_id).first()
+        if not s:
+            s = AppSettings(user_id=user_id)
+            session.add(s)
+            session.commit()
+            session.refresh(s)
+        return _serialize_settings(s)
+    except Exception as e:
+        session.rollback()
+        return None
+    finally:
+        session.close()
+
+
+def upsert_settings(user_id: int, data: dict):
+    """Update or create settings for a user."""
+    session = SessionLocal()
+    try:
+        s = session.query(AppSettings).filter(AppSettings.user_id == user_id).first()
+        if not s:
+            s = AppSettings(user_id=user_id)
+            session.add(s)
+        # Only update fields that are present in data
+        allowed = ['org_name','contact_email','timezone','dark_mode','compact_tables',
+                   'show_kpi_trends','notif_critical_alerts','notif_daily_digest',
+                   'notif_report_reminders','notif_sentiment_spike','notif_weekly_summary',
+                   'webhook_url','llm_model','sensitivity','prr_threshold','min_case_count',
+                   'auto_signal','sentiment_ai','duplicate_detect','two_fa',
+                   'session_timeout','audit_log_enabled','ip_whitelist']
+        for k in allowed:
+            if k in data:
+                setattr(s, k, data[k])
+        s.updated_at = datetime.now()
+        session.commit()
+        return _serialize_settings(s)
+    except Exception as e:
+        session.rollback()
+        print(f"   ❌ Settings upsert failed: {e}")
+        return None
+    finally:
+        session.close()
+
+
+# ============================================================
+# NOTIFICATION CRUD
+# ============================================================
+
+def _serialize_notification(n):
+    return {
+        'id': n.id,
+        'user_id': n.user_id,
+        'title': n.title,
+        'desc': n.desc or '',
+        'icon': n.icon or 'info',
+        'type': n.type or 'system',
+        'category': n.category or 'System',
+        'priority': n.priority or 'normal',
+        'unread': bool(n.unread),
+        'action_url': n.action_url,
+        'created_at': n.created_at.isoformat() if n.created_at else None,
+        'time': _time_ago(n.created_at),
+        'read_at': n.read_at.isoformat() if n.read_at else None,
+    }
+
+
+def create_notification(title: str, desc: str = '', icon: str = 'info',
+                         type: str = 'system', category: str = 'System',
+                         priority: str = 'normal', user_id: int = None,
+                         action_url: str = None):
+    """Create a new notification (global if user_id=None)."""
+    session = SessionLocal()
+    try:
+        n = Notification(title=title, desc=desc, icon=icon, type=type,
+                          category=category, priority=priority,
+                          user_id=user_id, action_url=action_url)
+        session.add(n)
+        session.commit()
+        return _serialize_notification(n)
+    except Exception as e:
+        session.rollback()
+        print(f"   ❌ Notification create failed: {e}")
+        return None
+    finally:
+        session.close()
+
+
+def get_notifications(user_id: int = None, limit: int = 100):
+    """Get notifications — global ones + user-specific ones."""
+    session = SessionLocal()
+    try:
+        from sqlalchemy import or_
+        q = session.query(Notification).order_by(Notification.created_at.desc())
+        if user_id is not None:
+            q = q.filter(or_(Notification.user_id == user_id, Notification.user_id == None))
+        q = q.limit(limit)
+        return [_serialize_notification(n) for n in q.all()]
+    finally:
+        session.close()
+
+
+def mark_notification_read(notif_id: int):
+    """Mark a single notification as read."""
+    session = SessionLocal()
+    try:
+        n = session.query(Notification).filter(Notification.id == notif_id).first()
+        if n:
+            n.unread = False
+            n.read_at = datetime.now()
+            session.commit()
+            return True
+        return False
+    except Exception as e:
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
+
+def mark_all_notifications_read(user_id: int = None):
+    """Mark all notifications as read (for a user or globally)."""
+    session = SessionLocal()
+    try:
+        from sqlalchemy import or_
+        q = session.query(Notification).filter(Notification.unread == True)
+        if user_id is not None:
+            q = q.filter(or_(Notification.user_id == user_id, Notification.user_id == None))
+        q.update({'unread': False, 'read_at': datetime.now()}, synchronize_session=False)
+        session.commit()
+        return True
+    except Exception as e:
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
+
+def delete_notification(notif_id: int):
+    """Permanently delete a notification."""
+    session = SessionLocal()
+    try:
+        n = session.query(Notification).filter(Notification.id == notif_id).first()
+        if n:
+            session.delete(n)
+            session.commit()
+            return True
+        return False
+    except Exception as e:
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
+
+def get_unread_notification_count(user_id: int = None):
+    """Count unread notifications for a user (or globally)."""
+    session = SessionLocal()
+    try:
+        from sqlalchemy import or_
+        q = session.query(Notification).filter(Notification.unread == True)
+        if user_id is not None:
+            q = q.filter(or_(Notification.user_id == user_id, Notification.user_id == None))
+        return q.count()
+    finally:
+        session.close()
+
+
+# ============================================================
+# AUDIT LOG CRUD
+# ============================================================
+
+def create_audit_log(user_id: int = None, user_email: str = None,
+                      action: str = '', metadata: dict = None, ip_address: str = None):
+    """Create an immutable audit log entry."""
+    session = SessionLocal()
+    try:
+        log = AuditLog(
+            user_id=user_id,
+            user_email=user_email,
+            action=action,
+            metadata_json=json.dumps(metadata or {}),
+            ip_address=ip_address,
+        )
+        session.add(log)
+        session.commit()
+        return log.id
+    except Exception as e:
+        session.rollback()
+        print(f"   ⚠️ Audit log skipped: {e}")
+        return None
+    finally:
+        session.close()
+
+
+def get_audit_logs(user_id: int = None, limit: int = 100):
+    """Get audit logs, optionally filtered by user."""
+    session = SessionLocal()
+    try:
+        q = session.query(AuditLog).order_by(AuditLog.created_at.desc())
+        if user_id:
+            q = q.filter(AuditLog.user_id == user_id)
+        logs = q.limit(limit).all()
+        return [{
+            'id': l.id, 'user_id': l.user_id, 'user_email': l.user_email,
+            'action': l.action, 'metadata': json.loads(l.metadata_json or '{}'),
+            'ip_address': l.ip_address,
+            'created_at': l.created_at.isoformat() if l.created_at else None,
+            'time': _time_ago(l.created_at),
+        } for l in logs]
+    finally:
+        session.close()
+
+
+# ============================================================
+# EXTENDED USER CRUD
+# ============================================================
+
+def _serialize_user(u):
+    return {
+        'id': u.id,
+        'name': u.name,
+        'email': u.email,
+        'role': u.role,
+        'department': u.department or 'Pharmacovigilance',
+        'status': u.status or 'Active',
+        'created_at': u.created_at.isoformat() if u.created_at else None,
+        'last_login': u.last_login.isoformat() if u.last_login else None,
+        'last_active': _time_ago(u.last_login) if u.last_login else 'Never',
+    }
+
+
+def get_all_users():
+    """Get all non-deleted users."""
+    session = SessionLocal()
+    try:
+        users = session.query(User).filter(
+            User.deleted_at == None
+        ).order_by(User.created_at.desc()).all()
+        return [_serialize_user(u) for u in users]
+    finally:
+        session.close()
+
+
+def get_user_by_id(user_id: int):
+    """Get a single user by ID."""
+    session = SessionLocal()
+    try:
+        u = session.query(User).filter(User.id == user_id, User.deleted_at == None).first()
+        return _serialize_user(u) if u else None
+    finally:
+        session.close()
+
+
+def update_user(user_id: int, data: dict):
+    """Update user fields. Returns updated user or error message."""
+    session = SessionLocal()
+    try:
+        u = session.query(User).filter(User.id == user_id, User.deleted_at == None).first()
+        if not u:
+            return None, 'User not found'
+        allowed = ['name', 'email', 'role', 'department', 'status']
+        for k in allowed:
+            if k in data:
+                setattr(u, k, data[k])
+        session.commit()
+        return _serialize_user(u), None
+    except Exception as e:
+        session.rollback()
+        return None, str(e)
+    finally:
+        session.close()
+
+
+def soft_delete_user(user_id: int):
+    """Soft-delete a user (never hard-delete for audit integrity)."""
+    session = SessionLocal()
+    try:
+        u = session.query(User).filter(User.id == user_id).first()
+        if not u:
+            return False, 'User not found'
+        u.deleted_at = datetime.now()
+        u.status = 'Inactive'
+        session.commit()
+        return True, None
+    except Exception as e:
+        session.rollback()
+        return False, str(e)
+    finally:
+        session.close()
+
+
+def change_password(user_id: int, new_password: str):
+    """Update password hash for a user."""
+    session = SessionLocal()
+    try:
+        u = session.query(User).filter(User.id == user_id).first()
+        if not u:
+            return False, 'User not found'
+        u.password_hash = hash_password(new_password)
+        session.commit()
+        return True, None
+    except Exception as e:
+        session.rollback()
+        return False, str(e)
+    finally:
+        session.close()
+
+
+def get_critical_alerts_count():
+    """Count critical severity intelligence records (for sidebar badge)."""
+    session = SessionLocal()
+    try:
+        return session.query(IntelligenceVault).filter(
+            IntelligenceVault.severity.in_(['Critical', 'High'])
+        ).count()
     finally:
         session.close()
