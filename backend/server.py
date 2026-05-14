@@ -33,10 +33,16 @@ from database import (
     create_project, get_all_projects, get_all_signals, get_trends_data,
     get_notifications, create_notification
 )
-from crawler import run_simulated_crawler, run_live_agentic_crawler, generate_scraper_config
+from crawler import (
+    run_simulated_crawler,
+    run_live_agentic_crawler,
+    generate_scraper_config,
+    run_twitterapi_crawler
+)
 from core.e2b_export import generate_e2b_xml, generate_e2b_r2_xml
 from core.vector_store import get_vector_store
 from core.webhook_alerter import get_recent_alerts
+
 # ── Modular route registrations ──────────────────────────────
 from routes.settings_routes import router as settings_router
 from routes.user_routes import router as user_router
@@ -90,12 +96,23 @@ async def root():
 class CaseReport(BaseModel):
     text: str
 
+
 class ScoutRequest(BaseModel):
     keyword: str
+
+
+class TwitterCrawlerRequest(BaseModel):
+    keyword: str
+    hours_back: int = 24
+    max_requests: int = 1
+    max_tweets_to_save: int = 10
+    dry_run: bool = False
+
 
 class SimilarEventQuery(BaseModel):
     query: str
     top_k: int = 5
+
 
 class RegisterRequest(BaseModel):
     name: str
@@ -105,15 +122,18 @@ class RegisterRequest(BaseModel):
     department: str = 'Pharmacovigilance'
     organization: str = ''
 
+
 class LoginRequest(BaseModel):
     email: str
     password: str
+
 
 class HelpQueryRequest(BaseModel):
     user_id: int
     user_email: str
     user_name: str
     question: str
+
 
 class AnswerQueryRequest(BaseModel):
     answer: str
@@ -253,6 +273,48 @@ async def trigger_scout(request: ScoutRequest, background_tasks: BackgroundTasks
     print(f"\n[RUN-SCOUT] Deploying Scout Agent for: {request.keyword}")
     background_tasks.add_task(run_simulated_crawler, request.keyword)
     return {"status": "Scout Agent Deployed", "drug": request.keyword}
+
+
+# ============================================================
+# ENDPOINT 2B: SAFE X/TWITTER CRAWLER USING TWITTERAPI.IO
+# ============================================================
+@app.post("/api/twitter/crawl")
+async def twitter_crawl(req: TwitterCrawlerRequest):
+    """
+    Safe X/Twitter crawler using TwitterAPI.io.
+
+    This does not disturb existing:
+    - /api/run-crawler
+    - /api/crawler/run
+    - self-healing website crawler
+
+    It saves tweets into the same intake_vault table.
+    """
+
+    keyword = req.keyword.strip()
+
+    if not keyword:
+        raise HTTPException(status_code=400, detail="Keyword is required")
+
+    try:
+        result = await asyncio.to_thread(
+            run_twitterapi_crawler,
+            keyword,
+            req.hours_back,
+            req.max_requests,
+            req.max_tweets_to_save,
+            req.dry_run
+        )
+
+        return {
+            "status": "success",
+            "keyword": keyword,
+            **result
+        }
+
+    except Exception as e:
+        print(f"[TWITTER-CRAWLER] Error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================
@@ -693,6 +755,7 @@ class CrawlerRequest(BaseModel):
     url: str
     keyword: str = "drug"
 
+
 @app.post("/api/run-crawler")
 async def run_crawler_legacy(req: CrawlerRequest):
     """Legacy endpoint alias — delegates to /api/crawler/run."""
@@ -747,6 +810,7 @@ async def crawler_run(req: CrawlerRequest):
 class AgentGenerateRequest(BaseModel):
     url: str
 
+
 @app.post("/api/agentic-scraper/generate")
 async def agentic_scraper_generate(req: AgentGenerateRequest):
     """
@@ -786,6 +850,7 @@ class ProjectCreateRequest(BaseModel):
     scraper_config: dict = {}
     agentic_enabled: bool = False
     schedule_interval: str = 'Daily'   # Scrape frequency: Real-time / Daily / Weekly
+
 
 @app.post("/api/projects")
 async def create_project_endpoint(req: ProjectCreateRequest):

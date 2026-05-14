@@ -252,7 +252,7 @@ def init_db():
 # ============================================================
 
 def save_intake(text, platform, drug, pii_map="{}"):
-    """Save a PII-masked intake record."""
+    """Save a PII-masked intake record. Returns the new record ID (int) or None."""
     session = SessionLocal()
     try:
         record = IntakeVault(
@@ -265,10 +265,14 @@ def save_intake(text, platform, drug, pii_map="{}"):
         )
         session.add(record)
         session.commit()
-        print(f"   💾 Intake saved: platform={platform}, drug={drug}")
+        new_id = record.id  # capture before session closes
+        session.refresh(record)
+        print(f"   💾 Intake saved: platform={platform}, drug={drug}, id={new_id}")
+        return new_id
     except Exception as e:
         session.rollback()
         print(f"   ❌ Intake save failed: {e}")
+        return None
     finally:
         session.close()
 
@@ -334,24 +338,100 @@ def save_intelligence(intake_id, result):
         analysis_full_text = str(result).lower()
         raw_text_lower = str(result.get('raw_text', '')).lower()
         
-        # --- DRUG RECOVERY ---
+        # --- COMPREHENSIVE DRUG RECOVERY ---
+        # Full map: keyword in text -> canonical drug name
+        _DRUG_MAP = {
+            "lisinopril": "Lisinopril", "metformin": "Metformin",
+            "atorvastatin": "Atorvastatin", "simvastatin": "Simvastatin",
+            "rosuvastatin": "Rosuvastatin", "amlodipine": "Amlodipine",
+            "omeprazole": "Omeprazole", "pantoprazole": "Pantoprazole",
+            "amoxicillin": "Amoxicillin", "azithromycin": "Azithromycin",
+            "ciprofloxacin": "Ciprofloxacin", "doxycycline": "Doxycycline",
+            "ibuprofen": "Ibuprofen", "aspirin": "Aspirin",
+            "paracetamol": "Paracetamol", "acetaminophen": "Acetaminophen",
+            "warfarin": "Warfarin", "clopidogrel": "Clopidogrel",
+            "insulin": "Insulin", "glipizide": "Glipizide",
+            "metoprolol": "Metoprolol", "atenolol": "Atenolol",
+            "losartan": "Losartan", "ramipril": "Ramipril",
+            "furosemide": "Furosemide", "prednisone": "Prednisone",
+            "prednisolone": "Prednisolone", "levothyroxine": "Levothyroxine",
+            "sertraline": "Sertraline", "fluoxetine": "Fluoxetine",
+            "alprazolam": "Alprazolam", "diazepam": "Diazepam",
+            "cetirizine": "Cetirizine", "loratadine": "Loratadine",
+            "naproxen": "Naproxen", "diclofenac": "Diclofenac",
+            "gabapentin": "Gabapentin", "pregabalin": "Pregabalin",
+            "tamoxifen": "Tamoxifen", "hydroxychloroquine": "Hydroxychloroquine",
+        }
         drug = _flatten(analysis.get('suspect_drug') or analysis.get('drug'))
-        if drug == "Unknown":
-            if "lisinopril" in analysis_full_text or "lisinopril" in raw_text_lower:
-                drug = "Lisinopril"
-            elif "metformin" in analysis_full_text or "metformin" in raw_text_lower:
-                drug = "Metformin"
-        
-        # --- EVENT RECOVERY ---
+        if drug in ("Unknown", "", None):
+            for kw, canonical in _DRUG_MAP.items():
+                if kw in analysis_full_text or kw in raw_text_lower:
+                    drug = canonical
+                    break
+        # Still Unknown? use drug_keyword stored in raw_text hint
+        if drug in ("Unknown", "", None):
+            drug = "Unknown"
+
+        # --- COMPREHENSIVE EVENT RECOVERY ---
+        _EVENT_MAP = {
+            "angioedema": "Angioedema",
+            "swelling": "Angioedema",
+            "anaphylax": "Anaphylaxis",
+            "nausea": "Nausea",
+            "vomit": "Vomiting",
+            "dizzy": "Dizziness",
+            "dizziness": "Dizziness",
+            "headache": "Cephalalgia",
+            "rash": "Skin Rash",
+            "hives": "Urticaria",
+            "fatigue": "Fatigue",
+            "tired": "Fatigue",
+            "pain": "Pain",
+            "chest pain": "Chest Pain",
+            "stomach pain": "Abdominal Pain",
+            "abdominal": "Abdominal Pain",
+            "diarrhea": "Diarrhoea",
+            "constipation": "Constipation",
+            "itching": "Pruritus",
+            "itch": "Pruritus",
+            "cough": "Cough",
+            "breathing": "Dyspnoea",
+            "breathless": "Dyspnoea",
+            "shortness of breath": "Dyspnoea",
+            "palpitation": "Palpitations",
+            "irregular heartbeat": "Palpitations",
+            "insomnia": "Insomnia",
+            "sleep": "Insomnia",
+            "liver": "Hepatotoxicity",
+            "jaundice": "Jaundice",
+            "kidney": "Nephrotoxicity",
+            "renal": "Nephrotoxicity",
+            "muscle": "Myalgia",
+            "myalgia": "Myalgia",
+            "depression": "Depression",
+            "anxiety": "Anxiety",
+            "tremor": "Tremor",
+            "metallic taste": "Dysgeusia",
+            "taste": "Dysgeusia",
+            "blurred vision": "Vision Blurred",
+            "vision": "Vision Blurred",
+            "hair loss": "Alopecia",
+            "fever": "Pyrexia",
+            "high blood pressure": "Hypertension",
+            "low blood pressure": "Hypotension",
+            "hypoglycemia": "Hypoglycaemia",
+            "low blood sugar": "Hypoglycaemia",
+            "seizure": "Seizure",
+        }
         event = _flatten(analysis.get('meddra_term') or analysis.get('adverse_event') or analysis.get('event'))
-        if event == "Unknown":
-            if "swelling" in analysis_full_text:
-                event = "Angioedema"
-            elif "nausea" in analysis_full_text:
-                event = "Nausea"
-            elif "dizzy" in analysis_full_text:
-                event = "Dizziness"
-        
+        if event in ("Unknown", "", None):
+            for kw, canonical in _EVENT_MAP.items():
+                if kw in analysis_full_text or kw in raw_text_lower:
+                    event = canonical
+                    break
+        if event in ("Unknown", "", None):
+            event = "Adverse Event"
+
         # --- CONCOMITANT DRUGS ---
         concomitant = analysis.get('concomitant_drugs', [])
         if isinstance(concomitant, list):
@@ -375,20 +455,31 @@ def save_intelligence(intake_id, result):
         reasoning = _flatten(doctor_data.get('reasoning') or "AI assessment pending.")
         pubmed_link = _flatten(doctor_data.get('pubmed_search_link') or "N/A")
         severity = _flatten(doctor_data.get('severity') or "Medium")
-        # Derive sentiment from causality/severity if not explicitly set
+
+        # --- SENTIMENT DERIVATION ---
+        # Prefer explicit sentiment from LLM; derive intelligently from causality+severity if absent
         raw_sentiment = analysis.get('sentiment')
         if raw_sentiment and str(raw_sentiment).strip() not in ("Unknown", "None", ""):
             sentiment = _flatten(raw_sentiment)
         else:
-            # Intelligently derive from causality + severity
-            caus_lower = causality.lower() if causality else ""
-            sev_lower = severity.lower() if severity else ""
-            if caus_lower in ("unlikely", "unassessable") or sev_lower == "low":
+            caus_lower = (causality or "").lower()
+            sev_lower = (severity or "").lower()
+            # Negative reactions: anything with known causality and med/high severity
+            if caus_lower in ("certain", "probable") or sev_lower in ("critical", "high"):
+                sentiment = "Negative"
+            elif caus_lower in ("unlikely", "unassessable") or sev_lower == "low":
                 sentiment = "Positive"
-            elif caus_lower == "possible" or sev_lower == "medium":
+            elif caus_lower in ("possible", "pending") or sev_lower == "medium":
                 sentiment = "Neutral"
             else:
-                sentiment = "Negative"
+                # Final fallback: scan raw text for distress keywords
+                distress_kws = ["side effect", "adverse", "bad reaction", "pain", "hurt",
+                                "nausea", "dizzy", "rash", "hospital", "emergency",
+                                "terrible", "horrible", "scared", "worried", "awful"]
+                if any(kw in raw_text_lower for kw in distress_kws):
+                    sentiment = "Negative"
+                else:
+                    sentiment = "Neutral"
         
         # WHO-UMC details
         umc_details = doctor_data.get('who_umc_details', {})

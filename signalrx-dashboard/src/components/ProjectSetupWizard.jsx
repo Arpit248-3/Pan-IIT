@@ -17,6 +17,7 @@ const DATA_SOURCES = [
   { id: 'twitter', label: 'X (Twitter)', desc: 'Posts, threads & mentions',     icon: MdAlternateEmail, color: '#1DA1F2', bg: 'rgba(29,161,242,.1)' },
   { id: 'quora',   label: 'Quora',       desc: 'Medical Q&A discussions',       icon: MdQuestionAnswer, color: '#B92B27', bg: 'rgba(185,43,39,.1)' },
 ]
+
 const LATENCY_OPTIONS = [
   { id: 'realtime', label: 'Real-time (Stream)', desc: 'Sub-second event processing', icon: MdBolt,          color: '#10B981' },
   { id: 'daily',    label: 'Daily Batch',        desc: 'Aggregated every 24 hours',   icon: MdSchedule,      color: '#F59E0B' },
@@ -107,7 +108,6 @@ export default function ProjectSetupWizard({ onClose }) {
     setAgentRunning(true)
     setAgentDone(false)
 
-    // Show pre-flight logs immediately
     pushLog('[SYSTEM] Initializing Agentic Crawler for target URL…')
     scheduleLog('[INFO] Fetching live HTML DOM from target URL…', 600)
     scheduleLog('[AGENT] Analyzing DOM structure & isolating content blocks…', 1300)
@@ -125,7 +125,6 @@ export default function ProjectSetupWizard({ onClose }) {
       pushLog(`[SUCCESS] Selectors generated: ${selStr}`)
       setAgentResult(data)
     } catch (err) {
-      // Graceful heuristic fallback so demo never crashes
       pushLog(`[AGENT] Live fetch restricted. Applying heuristic pattern recognition…`)
       const domain = (() => { try { return new URL(agentUrl).hostname } catch { return 'unknown.com' } })()
       const fallback = {
@@ -159,8 +158,13 @@ export default function ProjectSetupWizard({ onClose }) {
       setKeywordInput('')
     }
   }
+
   const removeKeyword = w => setKeywords(p=>(p||[]).filter(k=>k!==w))
-  const toggleSource = id => setSources(p=>{const s=p||[];return s.includes(id)?s.filter(x=>x!==id):[...s,id]})
+
+  const toggleSource = id => setSources(p=>{
+    const s = p || []
+    return s.includes(id) ? s.filter(x=>x!==id) : [...s,id]
+  })
 
   const copyConfig = () => {
     if (agentResult) {
@@ -175,40 +179,104 @@ export default function ProjectSetupWizard({ onClose }) {
   const handleDeploy = async () => {
     if (!projectName.trim()) return
     setDeploying(true)
+
+    logTimers.current.forEach(clearTimeout)
+    logTimers.current = []
+
+    const activeKeywords = [...(keywords || [])]
+    const pendingKeyword = keywordInput.trim().toLowerCase()
+
+    if (pendingKeyword && !activeKeywords.includes(pendingKeyword)) {
+      activeKeywords.push(pendingKeyword)
+      setKeywords(activeKeywords)
+      setKeywordInput('')
+    }
+
     try {
-      await fetch(`${API_BASE}/api/projects`, {
+      pushLog('[SYSTEM] Saving monitoring project configuration…')
+
+      const projectRes = await fetch(`${API_BASE}/api/projects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: projectName.trim(),
-          keywords: keywords || [],
+          keywords: activeKeywords,
           sources: sources || [],
           scraper_config: agentApproved ? agentResult : {},
           agentic_enabled: !!agentApproved,
           schedule_interval: LATENCY_TO_INTERVAL[latency] || 'Daily',
         }),
       })
+
+      if (!projectRes.ok) {
+        throw new Error(`Project save failed: HTTP ${projectRes.status}`)
+      }
+
+      pushLog('[SUCCESS] Project saved successfully.')
+
+      if ((sources || []).includes('twitter')) {
+        pushLog('[SYSTEM] X/Twitter selected. Activating TwitterAPI.io crawler…')
+
+        for (const kw of activeKeywords) {
+          const payload = {
+            keyword: kw,
+            hours_back: 48,
+            max_requests: 1,
+            max_tweets_to_save: 5,
+            dry_run: false,
+          }
+
+          pushLog(`[INFO] Deploying agent for keyword: "${kw}"…`)
+
+          const crawlRes = await fetch(`${API_BASE}/api/twitter/crawl`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+
+          const crawlData = await crawlRes.json()
+
+          if (!crawlRes.ok) {
+            pushLog(`[ERROR] Twitter crawler failed for ${kw}: ${crawlData.detail || 'Unknown error'}`)
+            continue
+          }
+
+          ;(crawlData.logs || []).forEach(line => pushLog(line))
+          pushLog(`[SUCCESS] ${crawlData.total_saved || 0} record(s) for "${kw}" — AI analysis complete.`)
+          pushLog(`[INFO] Data Explorer, Alerts & Reports tabs now show live signals for "${kw}".`)
+        }
+      } else {
+        pushLog('[INFO] No X/Twitter source selected. Project saved without Twitter crawl.')
+      }
+
+      setDeploying(false)
+      setDeployed(true)
+
+      const newProject = {
+        id: Date.now(),
+        name: projectName.trim(),
+        status: 'Active',
+        statusC: 'success',
+        progress: 0,
+        keywords: activeKeywords.length,
+        sources: (sources||[]).length > 0
+          ? sources.map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(', ')
+          : 'Wikipedia',
+        team: ['AI'],
+        due: 'Ongoing',
+        agenticEnabled: !!agentApproved,
+        schedule_interval: LATENCY_TO_INTERVAL[latency] || 'Daily',
+      }
+
+      pushLog('[SUCCESS] Deployment complete. Check Data Explorer, Alerts, Overview, and Trends.')
+
+      setTimeout(() => onClose?.(newProject), 1800)
+
     } catch (err) {
-      console.warn('Project save failed (offline?):', err)
+      console.warn('Project deployment failed:', err)
+      pushLog(`[ERROR] Deployment failed: ${err.message}`)
+      setDeploying(false)
     }
-    setDeploying(false)
-    setDeployed(true)
-    const newProject = {
-      id: Date.now(),
-      name: projectName.trim(),
-      status: 'Active',
-      statusC: 'success',
-      progress: 0,
-      keywords: (keywords||[]).length,
-      sources: (sources||[]).length > 0
-        ? sources.map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(', ')
-        : 'Wikipedia',
-      team: ['AI'],
-      due: 'Ongoing',
-      agenticEnabled: !!agentApproved,
-      schedule_interval: LATENCY_TO_INTERVAL[latency] || 'Daily',
-    }
-    setTimeout(() => onClose?.(newProject), 1200)
   }
 
   const lock = deploying || deployed

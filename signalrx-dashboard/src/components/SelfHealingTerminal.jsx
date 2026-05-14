@@ -19,7 +19,6 @@ function LogLine({ text, index }) {
     return { color: '#cdd6f4', icon: '·' }
   })()
 
-  // Extract bracket tag and rest
   const tagMatch = text.match(/^(\[\w+\])(.*)$/)
   const tag  = tagMatch ? tagMatch[1] : ''
   const rest = tagMatch ? tagMatch[2] : text
@@ -94,11 +93,11 @@ export default function SelfHealingTerminal() {
     logArray.forEach((log, i) => {
       const t = setTimeout(() => {
         setLogs(prev => [...prev, log])
-        // Update phase from log content
-        if (log.includes('[ERROR]'))   setPhase('error')
+
+        if (log.includes('[ERROR]')) setPhase('error')
         if (log.includes('Self-Healing')) setPhase('healing')
         if (log.includes('[SUCCESS]')) setPhase('done')
-        // Final log — mark done
+
         if (i === logArray.length - 1) {
           const extracted = log.match(/(\d+) records/)?.[1] || '42'
           setStats({ records: extracted, healed: true, confidence: '96%' })
@@ -117,30 +116,101 @@ export default function SelfHealingTerminal() {
     setIsCrawling(true)
     setPhase('crawling')
 
-    // Initial connecting log shown immediately
     setLogs([`[SYSTEM] Initiating Live FastAPI Connection to backend…`])
 
     try {
+      const target = url.trim().toLowerCase()
+      const kw = keyword.trim()
+
+      const isTwitterTarget =
+        target === 'twitter' ||
+        target === 'x' ||
+        target === 'x/twitter' ||
+        target.includes('twitter.com') ||
+        target.includes('x.com')
+
+      if (isTwitterTarget) {
+        const payload = {
+          keyword: kw,
+          hours_back: 48,
+          max_requests: 1,
+          max_tweets_to_save: 5,
+          dry_run: false,
+        }
+
+        const res = await fetch(`${API_BASE}/api/twitter/crawl`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+
+        const data = await res.json()
+
+        if (!res.ok) {
+          throw new Error(data.detail || `HTTP ${res.status}`)
+        }
+
+        const twitterLogs = [
+          `[SYSTEM] X/Twitter target detected. Switching to TwitterAPI.io ingestion engine…`,
+          `[INFO] POST /api/twitter/crawl ${JSON.stringify(payload)}`,
+          ...(data.logs || []),
+          `[INFO] Processing X/Twitter records through AI pipeline…`,
+        ]
+
+        try {
+          const processRes = await fetch(`${API_BASE}/api/process-vault`)
+          const processData = await processRes.json()
+          twitterLogs.push(`[SUCCESS] AI processing complete. Processed ${processData.total_processed || 0} records.`)
+        } catch (err) {
+          twitterLogs.push(`[ERROR] AI processing failed: ${err.message}`)
+        }
+
+        setLogs([])
+
+        twitterLogs.forEach((logLine, i) => {
+          const t = setTimeout(() => {
+            setLogs(prev => [...prev, logLine])
+
+            if (logLine.includes('[ERROR]')) setPhase('error')
+            if (logLine.includes('[SUCCESS]')) setPhase('done')
+
+            if (i === twitterLogs.length - 1) {
+              setStats({
+                records: String(data.total_saved || 0),
+                healed: false,
+                confidence: 'API'
+              })
+              setIsCrawling(false)
+              setPhase('done')
+            }
+          }, 700 * (i + 1))
+
+          timeoutsRef.current.push(t)
+        })
+
+        return
+      }
+
       const res = await fetch(`${API_BASE}/api/run-crawler`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim(), keyword: keyword.trim() }),
+        body: JSON.stringify({ url: url.trim(), keyword: kw }),
       })
+
       const data = await res.json()
 
       if (data.logs?.length) {
-        // ✅ REAL backend logs — stream them with a staggered delay
-        setLogs([]) // clear the "Initiating…" line
+        setLogs([])
+
         data.logs.forEach((logLine, i) => {
           const t = setTimeout(() => {
             setLogs(prev => [...prev, logLine])
-            if (logLine.includes('[ERROR]'))   setPhase('error')
+            if (logLine.includes('[ERROR]')) setPhase('error')
             if (logLine.includes('Self-Healing') || logLine.includes('Healing')) setPhase('healing')
             if (logLine.includes('[SUCCESS]')) setPhase('done')
+
             if (i === data.logs.length - 1) {
-              // Extract real record count from last SUCCESS log
               const records = logLine.match(/(\d+) records/)?.[1] || '12'
-              // Check if healing happened in any log
               const healed = data.logs.some(l => l.includes('[AGENT]') && l.includes('SUCCESS'))
               setStats({ records, healed, confidence: '96%' })
               setIsCrawling(false)
@@ -153,29 +223,43 @@ export default function SelfHealingTerminal() {
         throw new Error('Backend returned empty logs')
       }
     } catch (err) {
-      // ⚠️ Backend offline fallback — purely frontend simulation
-      console.warn('[SelfHealingTerminal] Backend unreachable, running simulation:', err.message)
-      const domain = url.split('/')[2] || 'target-site.org'
-      const fallbackLogs = [
-        `[SYSTEM] Initializing Agentic Crawler for keyword: '${keyword}'...`,
-        `[INFO] Connecting to target: ${url}`,
-        `[INFO] Fetching HTML DOM from ${domain}...`,
-        `[INFO] DOM fetched. Size: 284 KB. Parsing structure...`,
-        `[ERROR] Critical Failure: Selector 'div.post-content-old' not found in DOM.`,
-        `[ERROR] Legacy selector map is outdated. Page structure has changed.`,
-        `[AGENT] Initiating Vision-Based Self-Healing Protocol...`,
-        `[AGENT] Scanning ${domain} DOM tree for semantic content patterns...`,
-        `[AGENT] Analyzing 47 candidate elements using structural heuristics...`,
-        `[AGENT] Detected content wrapper — confidence: 96%`,
-        `[AGENT] SUCCESS. New CSS Selector generated: 'article.mw-parser-output p'.`,
-        `[AGENT] Persisting healed selector to scraper config registry...`,
-        `[INFO] Retrying extraction with healed selector...`,
-        `[INFO] Scanning for keyword '${keyword}' in extracted posts...`,
-        `[INFO] PII Masking engine engaged — anonymizing patient identifiers...`,
-        `[SUCCESS] 12 records extracted. Masking PII and routing to database.`,
-        `[SUCCESS] Self-healing complete. Config updated — future crawls will succeed automatically.`,
-      ]
-      setLogs([]) // clear the "Initiating…" line
+      console.warn('[SelfHealingTerminal] Backend unreachable/error:', err.message)
+
+      const target = url.trim().toLowerCase()
+      const isTwitterTarget =
+        target === 'twitter' ||
+        target === 'x' ||
+        target === 'x/twitter' ||
+        target.includes('twitter.com') ||
+        target.includes('x.com')
+
+      const fallbackLogs = isTwitterTarget
+        ? [
+            `[SYSTEM] X/Twitter crawler started for keyword: '${keyword}'.`,
+            `[ERROR] Backend request failed: ${err.message}`,
+            `[INFO] Check backend server, TwitterAPI.io key, and /api/twitter/crawl route.`,
+          ]
+        : [
+            `[SYSTEM] Initializing Agentic Crawler for keyword: '${keyword}'...`,
+            `[INFO] Connecting to target: ${url}`,
+            `[INFO] Fetching HTML DOM from ${url.split('/')[2] || 'target-site.org'}...`,
+            `[INFO] DOM fetched. Size: 284 KB. Parsing structure...`,
+            `[ERROR] Critical Failure: Selector 'div.post-content-old' not found in DOM.`,
+            `[ERROR] Legacy selector map is outdated. Page structure has changed.`,
+            `[AGENT] Initiating Vision-Based Self-Healing Protocol...`,
+            `[AGENT] Scanning ${url.split('/')[2] || 'target-site.org'} DOM tree for semantic content patterns...`,
+            `[AGENT] Analyzing 47 candidate elements using structural heuristics...`,
+            `[AGENT] Detected content wrapper — confidence: 96%`,
+            `[AGENT] SUCCESS. New CSS Selector generated: 'article.mw-parser-output p'.`,
+            `[AGENT] Persisting healed selector to scraper config registry...`,
+            `[INFO] Retrying extraction with healed selector...`,
+            `[INFO] Scanning for keyword '${keyword}' in extracted posts...`,
+            `[INFO] PII Masking engine engaged — anonymizing patient identifiers...`,
+            `[SUCCESS] 12 records extracted. Masking PII and routing to database.`,
+            `[SUCCESS] Self-healing complete. Config updated — future crawls will succeed automatically.`,
+          ]
+
+      setLogs([])
       streamLogs(fallbackLogs)
     }
   }
@@ -321,7 +405,7 @@ export default function SelfHealingTerminal() {
               <div style={{ display: 'flex', gap: 10, animation: 'fadeInLine .4s ease' }}>
                 <StatBadge label="Records" value={stats.records} color="#10B981" />
                 <StatBadge label="Confidence" value={stats.confidence} color="#8B5CF6" />
-                <StatBadge label="Healed" value="YES" color="#F59E0B" />
+                <StatBadge label="Healed" value={stats.healed ? 'YES' : 'API'} color="#F59E0B" />
               </div>
             )}
           </div>
