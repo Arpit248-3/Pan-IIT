@@ -109,6 +109,7 @@ class IntelligenceVault(Base):
     who_umc_score = Column(Integer)
     who_umc_factors = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.now)
+    ddi_risk_level = Column(String(50), default="None")  # High / Low / None
     fda_analysis_json = Column(Text, nullable=True)  # Persisted FDA result object
 
 
@@ -324,6 +325,7 @@ def init_db():
         # ── FDA persistence columns (safe to run on existing DBs) ──
         "ALTER TABLE intake_vault ADD COLUMN fda_analysis_json TEXT",
         "ALTER TABLE intelligence_vault ADD COLUMN fda_analysis_json TEXT",
+        "ALTER TABLE intelligence_vault ADD COLUMN ddi_risk_level TEXT DEFAULT NULL",
         # ── Crawler session + log tables (new — idempotent via CREATE TABLE) ──
         # These are created by create_all() above; migrations are no-ops on fresh DBs
         "ALTER TABLE crawler_sessions ADD COLUMN records_fetched INTEGER DEFAULT 0",
@@ -571,34 +573,69 @@ def save_intelligence(intake_id, result):
         pubmed_link = _flatten(doctor_data.get('pubmed_search_link') or "N/A")
         severity = _flatten(doctor_data.get('severity') or "Medium")
 
-        # --- SENTIMENT DERIVATION ---
-        # Prefer explicit sentiment from LLM; derive intelligently from causality+severity if absent
+        # --- SENTIMENT DERIVATION (Text-first NLP, not just causality) ---
+        # Step 1: Use explicit LLM sentiment if meaningful
         raw_sentiment = analysis.get('sentiment')
-        if raw_sentiment and str(raw_sentiment).strip() not in ("Unknown", "None", ""):
+        if raw_sentiment and str(raw_sentiment).strip() not in ('Unknown', 'None', ''):
             sentiment = _flatten(raw_sentiment)
         else:
-            caus_lower = (causality or "").lower()
-            sev_lower = (severity or "").lower()
-            # Negative reactions: anything with known causality and med/high severity
-            if caus_lower in ("certain", "probable") or sev_lower in ("critical", "high"):
-                sentiment = "Negative"
-            elif caus_lower in ("unlikely", "unassessable") or sev_lower == "low":
-                sentiment = "Positive"
-            elif caus_lower in ("possible", "pending") or sev_lower == "medium":
-                sentiment = "Neutral"
+            # Step 2: Full text NLP keyword scoring
+            _STRONG_NEG = [
+                'side effect', 'adverse', 'bad reaction', 'terrible', 'horrible', 'awful',
+                'dangerous', 'severe', 'serious', 'emergency', 'hospital', 'hospitalized',
+                'scared', 'worried', 'panic', 'unbearable', 'excruciating', 'stopped taking',
+                'had to stop', 'allergic', 'anaphylaxis', 'life-threatening', 'overdose',
+                'poisoning', 'toxic', 'liver damage', 'kidney failure',
+            ]
+            _MODERATE_NEG = [
+                'nausea', 'vomiting', 'dizzy', 'dizziness', 'headache', 'fatigue', 'tired',
+                'pain', 'hurt', 'ache', 'rash', 'itching', 'swelling', 'hives', 'bloating',
+                'constipation', 'diarrhea', 'insomnia', 'tremor', 'palpitation',
+                'blurred vision', 'hair loss', 'weakness', 'not working', 'no improvement',
+            ]
+            _POSITIVE = [
+                'works great', 'very helpful', 'feeling better', 'improved', 'effective',
+                'no side effects', 'well tolerated', 'excellent', 'amazing', 'wonderful',
+                'life changing', 'saved my life', 'highly recommend', 'helped me',
+                'good results', 'no issues', 'safe for me', 'great drug',
+            ]
+            neg_score  = sum(2 for kw in _STRONG_NEG   if kw in raw_text_lower)
+            neg_score += sum(1 for kw in _MODERATE_NEG if kw in raw_text_lower)
+            pos_score  = sum(2 for kw in _POSITIVE     if kw in raw_text_lower)
+            if neg_score >= 2 or (neg_score > 0 and pos_score == 0):
+                sentiment = 'Negative'
+            elif pos_score > neg_score:
+                sentiment = 'Positive'
+            elif neg_score == 1:
+                sentiment = 'Negative'
             else:
-                # Final fallback: scan raw text for distress keywords
-                distress_kws = ["side effect", "adverse", "bad reaction", "pain", "hurt",
-                                "nausea", "dizzy", "rash", "hospital", "emergency",
-                                "terrible", "horrible", "scared", "worried", "awful"]
-                if any(kw in raw_text_lower for kw in distress_kws):
-                    sentiment = "Negative"
+                caus_lower = (causality or '').lower()
+                sev_lower  = (severity  or '').lower()
+                if caus_lower in ('certain', 'probable') or sev_lower in ('critical', 'high'):
+                    sentiment = 'Negative'
+                elif caus_lower in ('unlikely',) and sev_lower == 'low':
+                    sentiment = 'Positive'
                 else:
-                    sentiment = "Neutral"
-        
+                    sentiment = 'Neutral'
+
+        # --- DDI RISK LEVEL (text-based, not always None) ---
+        ddi_risk_raw = doctor_data.get('ddi_risk_level', 'None')
+        if not ddi_risk_raw or ddi_risk_raw == 'None':
+            _HIGH_RISK = [
+                'warfarin', 'anticoagulant', 'blood thinner', 'nsaid', 'ssri', 'maoi',
+                'lithium', 'methotrexate', 'digoxin', 'phenytoin', 'carbamazepine',
+                'rifampin', 'fluconazole', 'ketoconazole', 'clarithromycin',
+                'cyclosporine', 'tacrolimus',
+            ]
+            concom_str = ' '.join(str(c) for c in (analysis.get('concomitant_drugs') or []))
+            combined   = raw_text_lower + ' ' + concom_str.lower()
+            m = sum(1 for kw in _HIGH_RISK if kw in combined)
+            ddi_risk_level = 'High' if m >= 2 else ('Low' if m == 1 else 'None')
+        else:
+            ddi_risk_level = ddi_risk_raw
+
         # --- EMOTION DERIVATION ---
-        # Derive emotion from event/sentiment keywords; store as prefix in reasoning
-        _ev_lower = (event or '').lower()
+        _ev_lower   = (event or '').lower()
         _sent_lower = (sentiment or '').lower()
         if any(kw in _ev_lower for kw in ['rash', 'swelling', 'angioedema', 'allergy', 'anaphylax', 'hives', 'urticaria', 'pruritus']):
             emotion = 'Concern'
@@ -612,7 +649,6 @@ def save_intelligence(intake_id, result):
             emotion = 'Relief'
         else:
             emotion = 'Neutral'
-        # Prefix emotion into reasoning so it can be extracted later
         if emotion and not reasoning.startswith('[Emotion:'):
             reasoning = f'[Emotion: {emotion}] {reasoning}'
 
@@ -642,6 +678,7 @@ def save_intelligence(intake_id, result):
             time_to_onset=time_to_onset,
             who_umc_score=who_umc_score,
             who_umc_factors=who_umc_factors,
+            ddi_risk_level=ddi_risk_level,
             created_at=datetime.now()
         )
         session.add(record)
@@ -2161,4 +2198,4 @@ def get_crawler_session(session_id: int) -> dict:
         print(f"[DB-ERROR] get_crawler_session: {e}")
         return {}
     finally:
-        db.close()
+        db.close()
