@@ -22,6 +22,7 @@ export default function Notifications({ currentUser }) {
   const refreshNotifications = useAyuStore(s => s.refreshNotifications)
   const markReadInStore      = useAyuStore(s => s.markNotificationRead)
   const markAllReadInStore   = useAyuStore(s => s.markAllNotificationsRead)
+  const loading              = notifsLoading  // alias for JSX compatibility
 
   const doRefresh = useCallback(() => refreshNotifications(userId), [refreshNotifications, userId])
 
@@ -58,19 +59,19 @@ export default function Notifications({ currentUser }) {
 
 
 
-  // ── Delete → persisted in DB ───────────────────────────────
+  // ── Delete → persisted in DB ─────────────────────────────
   const handleDelete = useCallback(async (notif, e) => {
     e.stopPropagation()
     setActionLoading(notif.id)
     try {
       await notificationService.remove(notif.id)
-      setNotifications(prev => prev.filter(n => n.id !== notif.id))
+      doRefresh()  // Re-fetch from store after delete
     } catch {
       toast.error('Failed to delete notification')
     } finally {
       setActionLoading(null)
     }
-  }, [])
+  }, [doRefresh])
 
   const unreadCount = notifications.filter(n => n.unread).length
   const tabs = ['All', `Unread (${unreadCount})`, 'Signals', 'Alerts']

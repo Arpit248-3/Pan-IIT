@@ -416,7 +416,7 @@ export default function Alerts({ openModal }) {
           <option value="Low">Low</option>
         </select>
         <button className="btn btn-secondary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-          onClick={fetchLiveSignals} disabled={loading}>
+          onClick={refreshIntelligence} disabled={loading}>
           <MdRefresh size={16} className={loading ? 'spin' : ''} />
           {loading ? 'Refreshing...' : 'Refresh Live'}
         </button>

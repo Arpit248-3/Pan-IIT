@@ -112,7 +112,7 @@ export default function DataExplorer() {
       })
       const data = await res.json()
       alert(`Scout Status: ${data.status}`)
-      setTimeout(fetchIntake, 2000)
+      setTimeout(refreshIntake, 2000)  // Refresh store after scout
     } catch {
       alert('Backend connection failed. Is server.py running?')
     } finally {
@@ -131,14 +131,14 @@ export default function DataExplorer() {
         ? `Processed: ${data.repaired} repaired, ${data.failed} failed.`
         : `Status: ${data.status}`
       alert(`AI Intelligence: ${msg}`)
-      fetchIntake()
+      refreshIntake()
     } catch {
       // Fallback to process-vault
       try {
         const res2 = await fetch(`${API_BASE}/api/process-vault`)
         const data2 = await res2.json()
         alert(`AI Intelligence: Processed ${data2.total_processed} signals.`)
-        fetchIntake()
+        refreshIntake()
       } catch {
         alert('Analysis failed. Check your Python terminal for agent logs.')
       }
