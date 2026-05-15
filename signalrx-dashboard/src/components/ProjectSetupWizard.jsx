@@ -11,11 +11,10 @@ import {
 import { API_BASE } from '../config';
 
 
-// Twitter is the ONLY supported source — Reddit and Quora have been removed
-const TWITTER_SOURCE = {
-  id: 'twitter', label: 'X (Twitter)', desc: 'Posts, threads & mentions',
-  icon: MdAlternateEmail, color: '#1DA1F2', bg: 'rgba(29,161,242,.1)'
-}
+const SOURCES = [
+  { id: 'twitter', label: 'X (Twitter)', desc: 'Posts, threads & mentions (max 5 tweets per crawl)', icon: MdAlternateEmail, color: '#1DA1F2', bg: 'rgba(29,161,242,.1)' },
+  { id: 'web',     label: 'Web URL',     desc: 'Any public website — self-healing crawler adapts automatically', icon: MdSettings, color: '#8B5CF6', bg: 'rgba(139,92,246,.1)' },
+]
 
 const LATENCY_OPTIONS = [
   { id: 'realtime', label: 'Real-time (Stream)', desc: 'Sub-second event processing', icon: MdBolt,          color: '#10B981' },
@@ -67,14 +66,14 @@ function LatencyOption({ option, selected, onSelect, disabled }) {
 
 export default function ProjectSetupWizard({ onClose, currentUser }) {
   const [projectName, setProjectName]   = useState('')
-  const [keywords, setKeywords]         = useState(['aspirin'])
+  const [keywords, setKeywords]         = useState([])
   const [keywordInput, setKeywordInput] = useState('')
-  // Twitter is the only source — auto-selected, not changeable
-  const sources = ['twitter']
+  const [sources, setSources]           = useState(['twitter'])
+  const [webUrl, setWebUrl]             = useState('')
   const [latency, setLatency]           = useState('realtime')
 
   // Agentic scraper state
-  const [agentUrl, setAgentUrl]         = useState('https://en.wikipedia.org/wiki/Aspirin')
+  const [agentUrl, setAgentUrl]         = useState('')
   const [agentLogs, setAgentLogs]       = useState([])
   const [agentRunning, setAgentRunning] = useState(false)
   const [agentDone, setAgentDone]       = useState(false)
@@ -166,6 +165,9 @@ export default function ProjectSetupWizard({ onClose, currentUser }) {
     return s.includes(id) ? s.filter(x=>x!==id) : [...s,id]
   })
 
+  const hasTwitter = (sources||[]).includes('twitter')
+  const hasWeb     = (sources||[]).includes('web')
+
   const copyConfig = () => {
     if (agentResult) {
       navigator.clipboard?.writeText(JSON.stringify(agentResult, null, 2))
@@ -195,62 +197,75 @@ export default function ProjectSetupWizard({ onClose, currentUser }) {
     try {
       pushLog('[SYSTEM] Saving monitoring project configuration…')
 
+      const selectedSources = sources.length > 0 ? sources : ['twitter']
+      const sourceType = hasWeb && webUrl.trim() ? 'web' : 'social'
+
       const projectRes = await fetch(`${API_BASE}/api/projects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: projectName.trim(),
           keywords: activeKeywords,
-          sources: ['twitter'],
+          sources: selectedSources,
           scraper_config: agentApproved ? agentResult : {},
           agentic_enabled: !!agentApproved,
           schedule_interval: LATENCY_TO_INTERVAL[latency] || 'Daily',
           owner_id: currentUser?.id ?? null,
           owner_email: currentUser?.email ?? null,
-          source_type: 'social',
-          source_url: null,
+          source_type: sourceType,
+          source_url: webUrl.trim() || null,
         }),
       })
 
       if (!projectRes.ok) {
-        throw new Error(`Project save failed: HTTP ${projectRes.status}`)
+        const errData = await projectRes.json().catch(() => ({}))
+        throw new Error(`Project save failed: HTTP ${projectRes.status} — ${errData.detail || 'check backend logs'}`)
       }
 
       pushLog('[SUCCESS] Project saved successfully.')
 
-      if ((sources || []).includes('twitter')) {
-        pushLog('[SYSTEM] X/Twitter selected. Activating TwitterAPI.io crawler…')
-
+      // ── Twitter crawl ──────────────────────────────────────────
+      if (hasTwitter) {
+        pushLog('[SYSTEM] X/Twitter selected — max 5 tweets per keyword to preserve API credits')
         for (const kw of activeKeywords) {
-          const payload = {
-            keyword: kw,
-            hours_back: 48,
-            max_requests: 1,
-            max_tweets_to_save: 5,
-            dry_run: false,
-          }
-
-          pushLog(`[INFO] Deploying agent for keyword: "${kw}"…`)
-
+          pushLog(`[INFO] Fetching tweets for keyword: "${kw}"…`)
           const crawlRes = await fetch(`${API_BASE}/api/twitter/crawl`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ keyword: kw, hours_back: 48, max_requests: 1, max_tweets_to_save: 5, dry_run: false }),
           })
-
           const crawlData = await crawlRes.json()
-
           if (!crawlRes.ok) {
-            pushLog(`[ERROR] Twitter crawler failed for ${kw}: ${crawlData.detail || 'Unknown error'}`)
+            pushLog(`[ERROR] Twitter fetch failed for "${kw}": ${crawlData.detail || 'Unknown error'}`)
             continue
           }
-
           ;(crawlData.logs || []).forEach(line => pushLog(line))
-          pushLog(`[SUCCESS] ${crawlData.total_saved || 0} record(s) for "${kw}" — AI analysis complete.`)
-          pushLog(`[INFO] Data Explorer, Alerts & Reports tabs now show live signals for "${kw}".`)
+          pushLog(`[SUCCESS] ${crawlData.total_saved || 0} signal(s) saved for "${kw}" — visible in Data Explorer`)
         }
-      } else {
-        pushLog('[INFO] No X/Twitter source selected. Project saved without Twitter crawl.')
+      }
+
+      // ── Web crawl ─────────────────────────────────────────────
+      if (hasWeb && webUrl.trim()) {
+        pushLog(`[SYSTEM] Web crawl selected — target: ${webUrl.trim()}`)
+        for (const kw of activeKeywords) {
+          pushLog(`[INFO] Starting self-healing web crawl for keyword: "${kw}"…`)
+          const crawlRes = await fetch(`${API_BASE}/api/crawler/run`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: webUrl.trim(), keyword: kw, source_id: 'generic_web', max_records: 10 }),
+          })
+          const crawlData = await crawlRes.json()
+          if (!crawlRes.ok) {
+            pushLog(`[ERROR] Web crawl failed for "${kw}": ${crawlData.detail || 'Unknown error'}`)
+            continue
+          }
+          pushLog(`[SUCCESS] Web crawl session #${crawlData.session_id} started — processing in background`)
+          pushLog(`[INFO] Results will appear in Data Explorer, Alerts & Reports as they complete`)
+        }
+      }
+
+      if (!hasTwitter && !hasWeb) {
+        pushLog('[INFO] No source selected — project saved. Add a source to start signal detection.')
       }
 
       setDeploying(false)
@@ -347,30 +362,46 @@ export default function ProjectSetupWizard({ onClose, currentUser }) {
         </div>
       </div>
 
-      {/* 3. Source — Twitter only */}
+      {/* 3. Source — user selects */}
       <div className="card" style={{marginBottom:20}}>
         <div className="card-header">
           <span className="card-title">3 — Data Source</span>
-          <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,
-            background:'rgba(29,161,242,.12)',color:'#1DA1F2',fontWeight:700}}>Twitter Only</span>
+          <span style={{fontSize:11,color:'var(--muted)'}}>Select one or both</span>
         </div>
-        <div className="card-body">
-          <div style={{display:'flex',alignItems:'center',gap:14,padding:'16px 18px',
-            background:'rgba(29,161,242,.04)',border:'1.5px solid #1DA1F2',borderRadius:'var(--radius)'}}>
-            <div style={{width:42,height:42,borderRadius:10,background:'rgba(29,161,242,.1)',color:'#1DA1F2',
-              display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <MdAlternateEmail size={22}/>
+        <div className="card-body" style={{display:'flex',flexDirection:'column',gap:10}}>
+          {SOURCES.map(src => {
+            const I = src.icon
+            const sel = (sources||[]).includes(src.id)
+            return (
+              <div key={src.id} onClick={()=>!lock&&toggleSource(src.id)}
+                style={{display:'flex',alignItems:'center',gap:14,padding:'14px 18px',
+                  background:sel?`${src.color}08`:'var(--surface)',
+                  border:`1.5px solid ${sel?src.color:'var(--border)'}`,
+                  borderRadius:'var(--radius)',cursor:lock?'not-allowed':'pointer',transition:'all .2s'}}>
+                <div style={{width:40,height:40,borderRadius:10,background:src.bg,color:src.color,
+                  display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><I size={20}/></div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700}}>{src.label}</div>
+                  <div style={{fontSize:12,color:'var(--muted)'}}>{src.desc}</div>
+                </div>
+                {sel
+                  ? <MdCheckCircle size={22} style={{color:src.color,flexShrink:0}}/>
+                  : <div style={{width:22,height:22,borderRadius:'50%',border:'2px solid var(--border)',flexShrink:0}}/>}
+              </div>
+            )
+          })}
+          {hasWeb && (
+            <div className="form-group" style={{marginTop:4,marginBottom:0}}>
+              <label className="form-label">Target Website URL</label>
+              <input className="form-input" value={webUrl}
+                onChange={e=>setWebUrl(e.target.value)}
+                placeholder="https://www.drugs.com/comments/paracetamol/"
+                disabled={lock}/>
+              <div style={{fontSize:11,color:'var(--muted)',marginTop:4}}>
+                The self-healing crawler adapts to any public website automatically
+              </div>
             </div>
-            <div style={{flex:1}}>
-              <div style={{fontSize:14,fontWeight:700}}>X (Twitter)</div>
-              <div style={{fontSize:12,color:'var(--muted)'}}>Posts, threads &amp; mentions — auto-selected</div>
-            </div>
-            <MdCheckCircle size={22} style={{color:'#1DA1F2',flexShrink:0}}/>
-          </div>
-          <p style={{fontSize:12,color:'var(--muted)',marginTop:10,lineHeight:1.5}}>
-            AyuScout currently supports <strong style={{color:'var(--text)'}}>X (Twitter)</strong> for pharmacovigilance
-            signal detection. Additional sources will be available in future releases.
-          </p>
+          )}
         </div>
       </div>
 

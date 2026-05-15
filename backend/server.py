@@ -1044,7 +1044,7 @@ class ProjectCreateRequest(BaseModel):
     scraper_config: dict = {}
     agentic_enabled: bool = False
     schedule_interval: str = 'Daily'
-    owner_id: int = None
+    owner_id: object = None    # Accept int OR str from localStorage
     owner_email: str = None
     source_type: str = 'social'
     source_url: str = None
