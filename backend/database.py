@@ -148,13 +148,21 @@ class Project(Base):
 
     id                  = Column(Integer, primary_key=True, autoincrement=True)
     name                = Column(String(300), nullable=False)
-    keywords_json       = Column(Text, default="[]")   # JSON array of keyword strings
-    sources_json        = Column(Text, default="[]")   # JSON array of source IDs
-    scraper_config_json = Column(Text, default="{}")   # JSON scraper config from Agentic Onboarder
-    status              = Column(String(50), default='Active')
+    owner_id            = Column(Integer, nullable=True)          # FK → users.id
+    keywords_json       = Column(Text, default="[]")              # JSON array of keyword strings
+    keyword_colors_json = Column(Text, default="[]")              # JSON array of hex colors per keyword
+    sources_json        = Column(Text, default='["twitter"]')     # Only Twitter supported
+    scraper_config_json = Column(Text, default="{}")              # Agentic scraper config
+    status              = Column(String(50), default='Active')    # Active|Paused|Monitoring|Completed|Failed
     agentic_enabled     = Column(Boolean, default=False)
-    schedule_interval   = Column(String(50), default='Daily')  # Scrape frequency: Real-time / Daily / Weekly
+    schedule_interval   = Column(String(50), default='Daily')     # Real-time|Daily|Weekly
+    scraper_status      = Column(String(50), default='Idle')      # Idle|Running|Paused|Error
+    ai_agent_status     = Column(String(50), default='Standby')   # Standby|Processing|Done
+    visibility          = Column(String(20), default='private')   # private|team|public
+    completion_reason   = Column(Text, nullable=True)
     created_at          = Column(DateTime, default=datetime.now)
+    updated_at          = Column(DateTime, default=datetime.now)
+    last_fetched_at     = Column(DateTime, nullable=True)
 
 
 class AppSettings(Base):
@@ -253,6 +261,14 @@ def init_db():
     # Backward-compatible migrations
     _safe_migrations = [
         "ALTER TABLE projects ADD COLUMN schedule_interval VARCHAR(50) DEFAULT 'Daily'",
+        "ALTER TABLE projects ADD COLUMN owner_id INTEGER",
+        "ALTER TABLE projects ADD COLUMN keyword_colors_json TEXT DEFAULT '[]'",
+        "ALTER TABLE projects ADD COLUMN scraper_status VARCHAR(50) DEFAULT 'Idle'",
+        "ALTER TABLE projects ADD COLUMN ai_agent_status VARCHAR(50) DEFAULT 'Standby'",
+        "ALTER TABLE projects ADD COLUMN visibility VARCHAR(20) DEFAULT 'private'",
+        "ALTER TABLE projects ADD COLUMN completion_reason TEXT",
+        "ALTER TABLE projects ADD COLUMN updated_at DATETIME",
+        "ALTER TABLE projects ADD COLUMN last_fetched_at DATETIME",
         "ALTER TABLE users ADD COLUMN department VARCHAR(100) DEFAULT 'Pharmacovigilance'",
         "ALTER TABLE users ADD COLUMN status VARCHAR(50) DEFAULT 'Active'",
         "ALTER TABLE users ADD COLUMN deleted_at DATETIME",
@@ -992,19 +1008,33 @@ def _serialize_query(q):
 # ============================================================
 
 def create_project(name: str, keywords: list, sources: list, scraper_config: dict = None,
-                   agentic_enabled: bool = False, schedule_interval: str = 'Daily'):
+                   agentic_enabled: bool = False, schedule_interval: str = 'Daily',
+                   owner_id: int = None):
     """Create and persist a new monitoring project."""
     session = SessionLocal()
     try:
+        # Assign a color palette to keywords
+        KEYWORD_COLORS = [
+            '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
+            '#EC4899', '#06B6D4', '#84CC16', '#F97316', '#6366F1'
+        ]
+        kw_colors = [KEYWORD_COLORS[i % len(KEYWORD_COLORS)] for i in range(len(keywords or []))]
+
         proj = Project(
             name=name,
+            owner_id=owner_id,
             keywords_json=json.dumps(keywords or []),
-            sources_json=json.dumps(sources or []),
+            keyword_colors_json=json.dumps(kw_colors),
+            sources_json=json.dumps(sources or ['twitter']),
             scraper_config_json=json.dumps(scraper_config or {}),
             status='Active',
             agentic_enabled=agentic_enabled,
             schedule_interval=schedule_interval,
-            created_at=datetime.now()
+            scraper_status='Idle',
+            ai_agent_status='Standby',
+            visibility='private',
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
         )
         session.add(proj)
         session.commit()
@@ -1017,51 +1047,202 @@ def create_project(name: str, keywords: list, sources: list, scraper_config: dic
         session.close()
 
 
-def get_all_projects():
+def get_all_projects(owner_id: int = None):
     """Return all projects ordered by creation date."""
     session = SessionLocal()
     try:
-        projs = session.query(Project).order_by(Project.created_at.desc()).all()
+        q = session.query(Project).order_by(Project.created_at.desc())
+        projs = q.all()
         return [_serialize_project(p) for p in projs]
     finally:
         session.close()
 
 
-def _serialize_project(p):
+def get_project_by_id(project_id: int):
+    """Return a single project with full live metrics."""
+    session = SessionLocal()
+    try:
+        p = session.query(Project).filter(Project.id == project_id).first()
+        if not p:
+            return None
+        return _serialize_project(p, full=True)
+    finally:
+        session.close()
+
+
+def delete_project(project_id: int) -> bool:
+    """Hard-delete a project record."""
+    session = SessionLocal()
+    try:
+        p = session.query(Project).filter(Project.id == project_id).first()
+        if not p:
+            return False
+        session.delete(p)
+        session.commit()
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"   [DB-ERROR] Project delete failed: {e}")
+        return False
+    finally:
+        session.close()
+
+
+def update_project(project_id: int, **kwargs) -> dict:
+    """Update allowed project fields. Returns updated serialized project."""
+    session = SessionLocal()
+    try:
+        p = session.query(Project).filter(Project.id == project_id).first()
+        if not p:
+            return None
+        ALLOWED = {'name', 'status', 'scraper_status', 'ai_agent_status',
+                   'schedule_interval', 'visibility', 'completion_reason', 'keywords_json',
+                   'keyword_colors_json', 'agentic_enabled', 'last_fetched_at'}
+        for key, val in kwargs.items():
+            if key in ALLOWED and hasattr(p, key):
+                setattr(p, key, val)
+        p.updated_at = datetime.now()
+        session.commit()
+        return _serialize_project(p)
+    except Exception as e:
+        session.rollback()
+        print(f"   [DB-ERROR] Project update failed: {e}")
+        return None
+    finally:
+        session.close()
+
+
+
+def _serialize_project(p, full: bool = False):
     try:
         keywords = json.loads(p.keywords_json or '[]')
     except Exception:
         keywords = []
     try:
-        sources = json.loads(p.sources_json or '[]')
+        kw_colors = json.loads(getattr(p, 'keyword_colors_json', None) or '[]')
     except Exception:
-        sources = []
+        kw_colors = []
+    try:
+        sources = json.loads(p.sources_json or '["twitter"]')
+    except Exception:
+        sources = ['twitter']
     try:
         scraper_config = json.loads(p.scraper_config_json or '{}')
     except Exception:
         scraper_config = {}
-    return {
+
+    # Ensure kw_colors has same length as keywords
+    KEYWORD_COLORS = [
+        '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
+        '#EC4899', '#06B6D4', '#84CC16', '#F97316', '#6366F1'
+    ]
+    while len(kw_colors) < len(keywords):
+        kw_colors.append(KEYWORD_COLORS[len(kw_colors) % len(KEYWORD_COLORS)])
+
+    # Real-time progress calculation from actual intake records
+    metrics = compute_project_progress(keywords)
+    progress = metrics['progress']
+
+    # Auto-set status to Completed if 100%
+    status = p.status or 'Active'
+    if progress == 100 and status not in ('Completed', 'Failed'):
+        status = 'Completed'
+
+    base = {
         'id': p.id,
         'name': p.name,
+        'owner_id': getattr(p, 'owner_id', None),
         'keywords': keywords,
+        'keyword_colors': kw_colors,
         'keywords_count': len(keywords),
         'sources': sources,
-        'sources_label': ', '.join(sources) if sources else 'Reddit',
-        'scraper_config': scraper_config,
-        'status': p.status or 'Active',
-        'statusC': 'success' if (p.status or 'Active') == 'Active' else 'warning',
+        'source_label': 'Twitter',
+        'scraper_config': scraper_config if full else {},
+        'status': status,
+        'scraper_status': getattr(p, 'scraper_status', 'Idle') or 'Idle',
+        'ai_agent_status': getattr(p, 'ai_agent_status', 'Standby') or 'Standby',
+        'visibility': getattr(p, 'visibility', 'private') or 'private',
+        'completion_reason': getattr(p, 'completion_reason', None),
         'agentic_enabled': bool(p.agentic_enabled),
         'schedule_interval': p.schedule_interval or 'Daily',
-        'progress': 0,
-        'team': ['AI'],
-        'due': 'Ongoing',
+        # Real progress metrics
+        'progress': progress,
+        'total_targets': metrics['total_targets'],
+        'processed_targets': metrics['processed_targets'],
+        'fetched_posts': metrics['fetched_posts'],
+        'matched_posts': metrics['matched_posts'],
+        'failed_fetches': metrics['failed_fetches'],
+        'remaining': metrics['remaining'],
+        'success_rate': metrics['success_rate'],
+        # Timestamps
         'created_at': p.created_at.isoformat() if p.created_at else None,
+        'updated_at': getattr(p, 'updated_at', None) and p.updated_at.isoformat(),
+        'last_fetched_at': getattr(p, 'last_fetched_at', None) and p.last_fetched_at.isoformat(),
     }
+    return base
 
+def compute_project_progress(keywords: list) -> dict:
+    """
+    Compute REAL progress metrics from the intake_vault based on project keywords.
+    This is NOT fake — it counts actual database records.
 
-# ============================================================
-# SIGNALS API  (thin wrapper over IntelligenceVault)
-# ============================================================
+    Progress = processed_targets / total_targets * 100
+    where:
+      total_targets    = all intake records whose drug_keyword matches any project keyword
+      processed_targets = those with status == 'analyzed'
+    """
+    session = SessionLocal()
+    try:
+        keywords_lower = [k.lower().strip() for k in (keywords or []) if k]
+        if not keywords_lower:
+            return {
+                'progress': 0, 'total_targets': 0, 'processed_targets': 0,
+                'fetched_posts': 0, 'matched_posts': 0, 'failed_fetches': 0,
+                'remaining': 0, 'success_rate': 0.0,
+            }
+
+        # Fetch all intake records
+        all_records = session.query(IntakeVault).all()
+
+        # Match by drug_keyword OR raw_text containing any keyword
+        def _matches(record):
+            drug_kw = (record.drug_keyword or '').lower()
+            raw = (record.raw_text or '').lower()
+            return any(kw in drug_kw or kw in raw for kw in keywords_lower)
+
+        matching = [r for r in all_records if _matches(r)]
+        total = len(matching)
+        processed = sum(1 for r in matching if r.status == 'analyzed')
+        failed = sum(1 for r in matching if r.status == 'failed')
+        remaining = total - processed - failed
+
+        # matched_posts = intelligence records linked to these intakes
+        intake_ids = [r.id for r in matching]
+        matched_posts = 0
+        if intake_ids:
+            matched_posts = session.query(IntelligenceVault).filter(
+                IntelligenceVault.intake_id.in_(intake_ids)
+            ).count()
+
+        progress = round((processed / total) * 100) if total > 0 else 0
+        # Auto-complete: if all records processed
+        if total > 0 and processed == total:
+            progress = 100
+        success_rate = round((processed / (processed + failed)) * 100) if (processed + failed) > 0 else 0.0
+
+        return {
+            'progress': progress,
+            'total_targets': total,
+            'processed_targets': processed,
+            'fetched_posts': total,
+            'matched_posts': matched_posts,
+            'failed_fetches': failed,
+            'remaining': max(0, remaining),
+            'success_rate': success_rate,
+        }
+    finally:
+        session.close()
+
 
 def get_all_signals():
     """Return all signals in the format expected by /api/signals."""

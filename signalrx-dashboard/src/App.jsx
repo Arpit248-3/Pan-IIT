@@ -11,6 +11,7 @@ import Reports from './pages/Reports'
 import Notifications from './pages/Notifications'
 import UserManagement from './pages/UserManagement'
 import Projects from './pages/Projects'
+import ProjectDetails from './pages/ProjectDetails'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
 import HelpCenter from './pages/HelpCenter'
@@ -30,6 +31,7 @@ const titles = {
   notifications:        'Notifications',
   'user-management':    'User Management',
   projects:             'Projects',
+  'project-detail':     'Project Details',
   settings:             'Settings',
   'help-center':        'Help Center',
   'admin-help':         'Admin Panel — Help Queries',
@@ -45,6 +47,7 @@ const pages = {
   notifications:        Notifications,
   'user-management':    UserManagement,
   projects:             Projects,
+  // project-detail is handled separately via ProjectDetails with projectId param
   settings:             Settings,
   'help-center':        HelpCenter,
   'admin-help':         AdminHelpDashboard,
@@ -52,11 +55,12 @@ const pages = {
 }
 
 export default function App() {
-  const [page, setPage]             = useState('dashboard')
-  const [modal, setModal]           = useState(null)
+  const [page, setPage]               = useState('dashboard')
+  const [navParams, setNavParams]     = useState({})   // carries projectId etc.
+  const [modal, setModal]             = useState(null)
   const [currentUser, setCurrentUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
-  const [heroShown, setHeroShown]   = useState(false)
+  const [heroShown, setHeroShown]     = useState(false)
 
   const isAdmin = currentUser?.role === 'admin'
 
@@ -88,9 +92,10 @@ export default function App() {
   }
 
   // Admin can only visit admin-help
-  const handleNavigate = (target) => {
+  const handleNavigate = (target, params = {}) => {
     if (isAdmin && target !== 'admin-help') return
     setPage(target)
+    setNavParams(params || {})
   }
 
   if (!authChecked) return null
@@ -119,11 +124,19 @@ export default function App() {
         <Header title={titles[page] || page} onNavigate={handleNavigate} />
         <div className="page-content" key={page}>
           <div className="fade-in">
-            <PageComponent
-              openModal={setModal}
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-            />
+            {page === 'project-detail' ? (
+              <ProjectDetails
+                projectId={navParams.projectId}
+                currentUser={currentUser}
+                onNavigate={handleNavigate}
+              />
+            ) : (
+              <PageComponent
+                openModal={setModal}
+                onNavigate={handleNavigate}
+                currentUser={currentUser}
+              />
+            )}
           </div>
         </div>
       </main>

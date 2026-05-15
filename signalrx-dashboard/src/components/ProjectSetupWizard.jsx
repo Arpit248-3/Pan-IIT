@@ -2,8 +2,7 @@ import { useState, useRef } from 'react'
 import {
   MdRocketLaunch, MdClose, MdAdd, MdCheckCircle, MdAutoFixHigh,
   MdRadioButtonChecked, MdRadioButtonUnchecked,
-  MdCheckBox, MdCheckBoxOutlineBlank,
-  MdForum, MdAlternateEmail, MdQuestionAnswer,
+  MdAlternateEmail,
   MdBolt, MdSchedule, MdCalendarMonth,
   MdSettings, MdArrowForward, MdInfoOutline,
   MdSmartToy, MdTerminal, MdContentCopy, MdDone
@@ -12,11 +11,11 @@ import {
 import { API_BASE } from '../config';
 
 
-const DATA_SOURCES = [
-  { id: 'reddit',  label: 'Reddit',      desc: 'Subreddits & drug communities', icon: MdForum,          color: '#FF4500', bg: 'rgba(255,69,0,.1)' },
-  { id: 'twitter', label: 'X (Twitter)', desc: 'Posts, threads & mentions',     icon: MdAlternateEmail, color: '#1DA1F2', bg: 'rgba(29,161,242,.1)' },
-  { id: 'quora',   label: 'Quora',       desc: 'Medical Q&A discussions',       icon: MdQuestionAnswer, color: '#B92B27', bg: 'rgba(185,43,39,.1)' },
-]
+// Twitter is the ONLY supported source — Reddit and Quora have been removed
+const TWITTER_SOURCE = {
+  id: 'twitter', label: 'X (Twitter)', desc: 'Posts, threads & mentions',
+  icon: MdAlternateEmail, color: '#1DA1F2', bg: 'rgba(29,161,242,.1)'
+}
 
 const LATENCY_OPTIONS = [
   { id: 'realtime', label: 'Real-time (Stream)', desc: 'Sub-second event processing', icon: MdBolt,          color: '#10B981' },
@@ -66,11 +65,12 @@ function LatencyOption({ option, selected, onSelect, disabled }) {
   )
 }
 
-export default function ProjectSetupWizard({ onClose }) {
+export default function ProjectSetupWizard({ onClose, currentUser }) {
   const [projectName, setProjectName]   = useState('')
   const [keywords, setKeywords]         = useState(['aspirin'])
   const [keywordInput, setKeywordInput] = useState('')
-  const [sources, setSources]           = useState([])
+  // Twitter is the only source — auto-selected, not changeable
+  const sources = ['twitter']
   const [latency, setLatency]           = useState('realtime')
 
   // Agentic scraper state
@@ -201,10 +201,11 @@ export default function ProjectSetupWizard({ onClose }) {
         body: JSON.stringify({
           name: projectName.trim(),
           keywords: activeKeywords,
-          sources: sources || [],
+          sources: ['twitter'],          // always Twitter
           scraper_config: agentApproved ? agentResult : {},
           agentic_enabled: !!agentApproved,
           schedule_interval: LATENCY_TO_INTERVAL[latency] || 'Daily',
+          owner_id: currentUser?.id ?? null,
         }),
       })
 
@@ -343,14 +344,30 @@ export default function ProjectSetupWizard({ onClose }) {
         </div>
       </div>
 
-      {/* 3. Sources */}
+      {/* 3. Source — Twitter only */}
       <div className="card" style={{marginBottom:20}}>
-        <div className="card-header"><span className="card-title">3 — Data Sources</span>
-          <span style={{fontSize:12,color:'var(--muted)'}}>{(sources||[]).length} selected</span></div>
+        <div className="card-header">
+          <span className="card-title">3 — Data Source</span>
+          <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,
+            background:'rgba(29,161,242,.12)',color:'#1DA1F2',fontWeight:700}}>Twitter Only</span>
+        </div>
         <div className="card-body">
-          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12}}>
-            {DATA_SOURCES.map(s=><SourceCard key={s.id} source={s} selected={(sources||[]).includes(s.id)} onToggle={toggleSource} disabled={lock}/>)}
+          <div style={{display:'flex',alignItems:'center',gap:14,padding:'16px 18px',
+            background:'rgba(29,161,242,.04)',border:'1.5px solid #1DA1F2',borderRadius:'var(--radius)'}}>
+            <div style={{width:42,height:42,borderRadius:10,background:'rgba(29,161,242,.1)',color:'#1DA1F2',
+              display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+              <MdAlternateEmail size={22}/>
+            </div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:14,fontWeight:700}}>X (Twitter)</div>
+              <div style={{fontSize:12,color:'var(--muted)'}}>Posts, threads &amp; mentions — auto-selected</div>
+            </div>
+            <MdCheckCircle size={22} style={{color:'#1DA1F2',flexShrink:0}}/>
           </div>
+          <p style={{fontSize:12,color:'var(--muted)',marginTop:10,lineHeight:1.5}}>
+            AyuScout currently supports <strong style={{color:'var(--text)'}}>X (Twitter)</strong> for pharmacovigilance
+            signal detection. Additional sources will be available in future releases.
+          </p>
         </div>
       </div>
 
