@@ -3,6 +3,7 @@ import { MdWarning, MdShowChart, MdAssignmentTurnedIn, MdRefresh, MdDoneAll } fr
 import { toast } from 'sonner'
 import notificationService from '../services/notificationService'
 import { useDataRefresh } from '../utils/dataEvents'
+import useAyuStore from '../store/useAyuStore'
 
 const iconMap = {
   critical: { icon: MdWarning,            bg: 'var(--danger-bg)', color: 'var(--danger)' },
@@ -11,56 +12,51 @@ const iconMap = {
 }
 
 export default function Notifications({ currentUser }) {
-  const [notifications, setNotifications] = useState([])
-  const [loading, setLoading]             = useState(true)
-  const [tab, setTab]                     = useState('All')
-  const [actionLoading, setActionLoading] = useState(null) // id of item being actioned
-
+  const [tab, setTab]                   = useState('All')
+  const [actionLoading, setActionLoading] = useState(null)
   const userId = currentUser?.id
 
-  // ── Fetch from backend ──────────────────────────────────────
-  const fetchNotifications = useCallback(async () => {
-    setLoading(true)
-    try {
-      const data = await notificationService.getAll(userId)
-      setNotifications(data.notifications || [])
-    } catch {
-      toast.error('Failed to load notifications')
-    } finally {
-      setLoading(false)
-    }
-  }, [userId])
+  // ── Zustand store ──────────────────────────────────────────
+  const notifications        = useAyuStore(s => s.notifications)
+  const notifsLoading        = useAyuStore(s => s.notifsLoading)
+  const refreshNotifications = useAyuStore(s => s.refreshNotifications)
+  const markReadInStore      = useAyuStore(s => s.markNotificationRead)
+  const markAllReadInStore   = useAyuStore(s => s.markAllNotificationsRead)
 
-  useEffect(() => { fetchNotifications() }, [fetchNotifications])
-  // Auto-refresh when Dashboard fires analysis complete event
-  useDataRefresh(fetchNotifications)
+  const doRefresh = useCallback(() => refreshNotifications(userId), [refreshNotifications, userId])
 
-  // ── Mark single read → persisted in DB ────────────────────
+  useEffect(() => {
+    const store = useAyuStore.getState()
+    if (store.notifications.length === 0) doRefresh()
+  }, [doRefresh])
+  useDataRefresh(doRefresh)  // Safety net: legacy event bus
+
+  // ── Mark single read → persisted in DB ───────────────────
   const handleMarkRead = useCallback(async (notif) => {
     if (!notif.unread) return
     setActionLoading(notif.id)
     try {
       await notificationService.markRead(notif.id)
-      setNotifications(prev =>
-        prev.map(n => n.id === notif.id ? { ...n, unread: false } : n)
-      )
+      markReadInStore(notif.id)  // Optimistic update in store
     } catch {
       toast.error('Failed to mark as read')
     } finally {
       setActionLoading(null)
     }
-  }, [])
+  }, [markReadInStore])
 
-  // ── Mark all read → persisted in DB ───────────────────────
+  // ── Mark all read → persisted in DB ──────────────────────
   const handleMarkAllRead = useCallback(async () => {
     try {
       await notificationService.markAllRead(userId)
-      setNotifications(prev => prev.map(n => ({ ...n, unread: false })))
+      markAllReadInStore()  // Optimistic update in store
       toast.success('All notifications marked as read')
     } catch {
       toast.error('Failed to mark all as read')
     }
-  }, [userId])
+  }, [userId, markAllReadInStore])
+
+
 
   // ── Delete → persisted in DB ───────────────────────────────
   const handleDelete = useCallback(async (notif, e) => {

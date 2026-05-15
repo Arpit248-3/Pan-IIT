@@ -3,6 +3,7 @@ import { MdDownload, MdRefresh, MdVisibility, MdClose } from 'react-icons/md'
 
 import { API_BASE } from '../config';
 import { useDataRefresh } from '../utils/dataEvents'
+import useAyuStore from '../store/useAyuStore'
 
 const sevColors = { Critical: 'danger', High: 'warning', Medium: 'info', Low: 'neutral' }
 
@@ -23,27 +24,21 @@ function reportSanitize(text = '') {
 }
 
 export default function Reports({ openModal }) {
-  const [reports, setReports] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [exporting, setExporting] = useState(null)
-  const [typeFilter, setTypeFilter] = useState('All Types')
+  const [exporting, setExporting]     = useState(null)
+  const [typeFilter, setTypeFilter]   = useState('All Types')
   const [statusFilter, setStatusFilter] = useState('All Status')
 
-  const fetchReports = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/reports`)
-      const data = await res.json()
-      if (data.status === 'success') setReports(data.reports || [])
-    } catch (err) {
-      console.error('Failed to fetch reports:', err)
-    }
-    setLoading(false)
-  }, [])
+  // ── Zustand store (primary data source) ────────────────
+  const reports       = useAyuStore(s => s.reports)
+  const vaultLoading  = useAyuStore(s => s.vaultLoading)
+  const refreshReports = useAyuStore(s => s.refreshReports)
+  const loading = vaultLoading && reports.length === 0
 
-  useEffect(() => { fetchReports() }, [fetchReports])
-  // Auto-refresh when Dashboard fires analysis complete event
-  useDataRefresh(fetchReports)
+  useEffect(() => {
+    const store = useAyuStore.getState()
+    if (store.reports.length === 0) store.refreshReports()
+  }, [])
+  useDataRefresh(refreshReports)  // Safety net: legacy event bus
 
   // ── E2B R3 Export ─────────────────────────────────────────────
   const handleExportE2B = async (report, format = 'r3') => {

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import useAyuStore from './store/useAyuStore'
 import Sidebar from './components/Sidebar'
 import Header from './components/Header'
 import Modal from './components/Modal'
@@ -76,6 +77,8 @@ export default function App() {
     localStorage.setItem('ayuscout_user', JSON.stringify(user))
     setCurrentUser(user)
     setPage(user.role === 'admin' ? 'admin-help' : 'dashboard')
+    // Seed the store with fresh data after login
+    useAyuStore.getState().refreshAll(user?.id)
   }
 
   const handleLogout = () => {

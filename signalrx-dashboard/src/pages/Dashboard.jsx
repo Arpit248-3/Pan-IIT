@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 import { MdArrowUpward, MdArrowDownward, MdOpenInNew, MdDownload, MdScience } from 'react-icons/md'
 import { API_BASE } from '../config';
 import { fireDataUpdated } from '../utils/dataEvents'
+import useAyuStore from '../store/useAyuStore'
 
 
 // Color helpers
@@ -22,62 +23,61 @@ function getSeverityBadge(severity) {
   return 'neutral'
 }
 
-export default function Dashboard() {
+export default function Dashboard({ currentUser }) {
   const [inputText, setInputText] = useState("")
   const [aiResult, setAiResult] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [exportingE2B, setExportingE2B] = useState(false)
+  // AbortController ref to cancel in-flight requests
+  const abortRef = useRef(null)
 
-  // Dynamic data state
-  const [stats, setStats] = useState(null)
-  const [statsLoading, setStatsLoading] = useState(true)
+  // Read stats from centralized store (shared with TrendAnalysis tab)
+  const stats       = useAyuStore(s => s.stats)
+  const statsLoading = useAyuStore(s => s.statsLoading)
+  const refreshAll  = useAyuStore(s => s.refreshAll)
+  const setLatestAnalysis = useAyuStore(s => s.setLatestAnalysis)
 
-  // Fetch dashboard stats from backend
+  // Initial data load
   useEffect(() => {
-    const fetchStats = async () => {
-      setStatsLoading(true)
-      try {
-        const res = await fetch(`${API_BASE}/api/dashboard-stats`)
-        const data = await res.json()
-        if (data.status === 'success') {
-          setStats(data)
-        }
-      } catch (err) {
-        console.error('Failed to fetch dashboard stats:', err)
-      }
-      setStatsLoading(false)
-    }
-    fetchStats()
+    const store = useAyuStore.getState()
+    if (!store.stats) store.refreshStats()
   }, [])
 
   const analyzeTextWithAI = async () => {
+    // Cancel any in-flight request to prevent race conditions
+    if (abortRef.current) abortRef.current.abort()
+    abortRef.current = new AbortController()
+
     setIsLoading(true)
     setAiResult(null)
+    const requestTs = Date.now()
+
     try {
       const response = await fetch(`${API_BASE}/api/analyze-case`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: inputText }),
+        signal: abortRef.current.signal,
       })
       const data = await response.json()
       if (data.status === "success") {
         setAiResult(data)
-        // Clear raw input — never keep PII visible after analysis
-        setInputText("")
-        // Fire global refresh — all other open tabs will refetch automatically
-        fireDataUpdated()
-        // Also refresh dashboard stats
-        try {
-          const r2 = await fetch(`${API_BASE}/api/dashboard-stats`)
-          const d2 = await r2.json()
-          if (d2.status === 'success') setStats(d2)
-        } catch {}
+        setInputText("")  // Clear raw input — never keep PII visible
+        // Push to centralized store — ALL tabs update instantly
+        setLatestAnalysis(data)
+        fireDataUpdated()  // Legacy event bus fallback
+        // Refresh all vault data in parallel (non-blocking)
+        refreshAll(currentUser?.id)
       }
     } catch (error) {
+      if (error.name === 'AbortError') {
+        console.log('[Dashboard] Request aborted — superseded by newer analysis')
+        return
+      }
       console.error("API Error:", error)
       setAiResult({
         status: "success",
-        masked_text: "[Backend offline — no masking performed]",
+        masked_text: "[Backend offline]",
         pii_detected: false, pii_types_detected: [], pii_token_count: 0,
         intake_id: null, intelligence_id: null, e2b_available: false,
         clinical_data: { suspect_drug: "Backend Offline", adverse_event: "Connection refused", meddra_term: "N/A", concomitant_drugs: [], time_to_onset: "N/A" },
@@ -86,8 +86,9 @@ export default function Dashboard() {
         reasoning: "Backend server not running. Start with: python server.py",
         extraction_attempts: 0, who_umc_details: {}
       })
+    } finally {
+      setIsLoading(false)
     }
-    setIsLoading(false)
   }
 
   const handleExportE2B = async () => {

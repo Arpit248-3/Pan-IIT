@@ -12,6 +12,7 @@ import {
 
 import { API_BASE } from '../config';
 import { useDataRefresh } from '../utils/dataEvents'
+import useAyuStore from '../store/useAyuStore'
 
 const sevColors = { Critical: 'danger', High: 'warning', Medium: 'info', Low: 'neutral' }
 
@@ -320,25 +321,19 @@ function TraceabilityDrawer({ signal, onClose }) {
    MAIN — ALERTS COMMAND CENTER
    ══════════════════════════════════════════════════════════════ */
 export default function Alerts({ openModal }) {
-  const [liveSignals, setLiveSignals] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [trendData, setTrendData] = useState([])
+  // ── UI-only state ──────────────────────────────────────────
+  const [trendData, setTrendData]     = useState([])
   const [exportingId, setExportingId] = useState(null)
   const [drawerSignal, setDrawerSignal] = useState(null)
-  const [sevFilter, setSevFilter] = useState('All')
+  const [sevFilter, setSevFilter]     = useState('All')
 
-  /* -- Fetch live signals -- */
-  const fetchLiveSignals = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/alerts-feed`)
-      const data = await res.json()
-      if (data.status === 'success') setLiveSignals(data.records || [])
-    } catch (err) { console.error('Failed to fetch live signals:', err) }
-    setLoading(false)
-  }, [])
+  // ── Zustand store (single source of truth) ─────────────────
+  const liveSignals         = useAyuStore(s => s.intelligenceRecords)
+  const vaultLoading        = useAyuStore(s => s.vaultLoading)
+  const refreshIntelligence = useAyuStore(s => s.refreshIntelligence)
+  const loading = vaultLoading && liveSignals.length === 0
 
-  /* -- Fetch trend timeline from /api/trends -- */
+  /* -- Fetch trend timeline (local — no global equivalent) -- */
   const fetchTrends = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/trends?days=7`)
@@ -356,9 +351,12 @@ export default function Alerts({ openModal }) {
     } catch { /* silently ignore */ }
   }, [])
 
-  useEffect(() => { fetchLiveSignals(); fetchTrends() }, [fetchLiveSignals, fetchTrends])
-  // Auto-refresh when Dashboard fires analysis complete event
-  useDataRefresh(fetchLiveSignals)
+  useEffect(() => {
+    const store = useAyuStore.getState()
+    if (store.intelligenceRecords.length === 0) store.refreshIntelligence()
+    fetchTrends()
+  }, [fetchTrends])
+  useDataRefresh(refreshIntelligence)  // Safety net: legacy event bus
 
   /* ── E2B Export ───────────────────────────────────────────── */
   const handleExportE2B = async (recordId) => {

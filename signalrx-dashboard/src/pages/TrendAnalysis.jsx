@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react'
-import { AreaChart, Area, LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell, ReferenceLine, ReferenceDot } from 'recharts'
+import { useState, useEffect, useCallback } from 'react'
+import { AreaChart, Area, LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell, ReferenceLine } from 'recharts'
 import { MdArrowUpward, MdArrowDownward, MdRefresh, MdDownload, MdWarning } from 'react-icons/md'
 
 import { API_BASE } from '../config';
+import { useDataRefresh } from '../utils/dataEvents'
+import useAyuStore from '../store/useAyuStore'
 
 
 // Fallback spike data used only when DB is empty (shows demo narrative)
@@ -17,24 +19,16 @@ const FALLBACK_SPIKE = [
 ]
 
 export default function TrendAnalysis({ openModal }) {
-  const [stats, setStats]       = useState(null)
-  const [loading, setLoading]   = useState(true)
-  const [generating, setGenerating] = useState(false)
   const [spikeData, setSpikeData]   = useState(FALLBACK_SPIKE)
+  const [generating, setGenerating] = useState(false)
 
-  const fetchStats = async () => {
-    setLoading(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/dashboard-stats`)
-      const data = await res.json()
-      if (data.status === 'success') setStats(data)
-    } catch (err) {
-      console.error('Failed to fetch stats:', err)
-    }
-    setLoading(false)
-  }
+  // ── Zustand store (shared with Dashboard — no duplicate fetch) ──────
+  const stats       = useAyuStore(s => s.stats)
+  const statsLoading = useAyuStore(s => s.statsLoading)
+  const refreshStats = useAyuStore(s => s.refreshStats)
+  const loading = statsLoading && !stats
 
-  const fetchTrends = async () => {
+  const fetchTrends = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/trends?days=7`)
       const data = await res.json()
@@ -45,9 +39,14 @@ export default function TrendAnalysis({ openModal }) {
         setSpikeData(data.data.map(d => ({ day: d.date, signals: d.signals, baseline })))
       }
     } catch { /* keep fallback */ }
-  }
+  }, [])
 
-  useEffect(() => { fetchStats(); fetchTrends() }, [])
+  useEffect(() => {
+    const store = useAyuStore.getState()
+    if (!store.stats) store.refreshStats()
+    fetchTrends()
+  }, [fetchTrends])
+  useDataRefresh(fetchTrends)  // Refresh trend chart after new analysis
 
   const totalRecords = stats?.total_records || 0
   const sevCounts = stats?.severity_counts || {}
@@ -147,12 +146,18 @@ export default function TrendAnalysis({ openModal }) {
             </LineChart>
           </ResponsiveContainer>
           <div style={{ display: 'flex', gap: 16, marginTop: 8, flexWrap: 'wrap' }}>
-            {[
-              { label: 'Peak Signal Count', val: '38', color: '#EF4444' },
-              { label: 'Baseline Average', val: '9.4/day', color: '#3B82F6' },
-              { label: 'Surge Factor', val: '+238%', color: '#F59E0B' },
-              { label: 'Root Cause Drug', val: 'Lisinopril', color: '#8B5CF6' },
-            ].map(s => (
+            {(() => {
+              const peak = Math.max(...spikeData.map(d => d.signals), 1)
+              const baseline = spikeData[0]?.baseline || 1
+              const surge = baseline > 0 ? Math.round(((peak - baseline) / baseline) * 100) : 0
+              const topDrug = stats?.top_drugs?.[0]?.[0] || 'N/A'
+              return [
+                { label: 'Peak Signal Count', val: String(peak), color: '#EF4444' },
+                { label: 'Baseline Average', val: `${baseline}/day`, color: '#3B82F6' },
+                { label: 'Surge Factor', val: surge > 0 ? `+${surge}%` : '—', color: '#F59E0B' },
+                { label: 'Root Cause Drug', val: topDrug, color: '#8B5CF6' },
+              ]
+            })().map(s => (
               <div key={s.label} style={{ padding: '8px 14px', background: 'var(--bg)',
                 borderRadius: 8, border: `1px solid ${s.color}20`, flex: '1 1 120px' }}>
                 <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700,
@@ -167,7 +172,7 @@ export default function TrendAnalysis({ openModal }) {
       <div className="filter-bar">
         <select className="filter-select"><option>All Therapeutic Areas</option><option>Diabetes</option><option>Cardiology</option></select>
         <select className="filter-select"><option>All Time</option><option>Monthly</option><option>Weekly</option></select>
-        <button className="btn btn-ghost btn-sm" onClick={fetchStats} disabled={loading}>
+        <button className="btn btn-ghost btn-sm" onClick={() => { refreshStats(); fetchTrends() }} disabled={loading}>
           <MdRefresh size={16} className={loading ? 'spin' : ''} /> Refresh
         </button>
         <button className="btn btn-primary btn-sm" onClick={handleGenerateReport} disabled={loading || generating}>

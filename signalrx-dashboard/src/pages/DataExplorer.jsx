@@ -7,6 +7,7 @@ import { MdRefresh, MdSearch, MdClose, MdScience, MdDataset } from 'react-icons/
 
 import { API_BASE } from '../config';
 import { useDataRefresh } from '../utils/dataEvents'
+import useAyuStore from '../store/useAyuStore'
 
 
 // ============================================================
@@ -78,34 +79,26 @@ const ALL_EMOTIONS = [
 ]
 
 export default function DataExplorer() {
-  // ── State ──────────────────────────────────────────────────
-  const [keyword, setKeyword]           = useState('')
-  const [searchInput, setSearchInput]   = useState('')
-  const [isScouting, setIsScouting]     = useState(false)
-  const [isAnalyzing, setIsAnalyzing]   = useState(false)
-  const [intakeRecords, setIntakeRecords] = useState([])
-  const [loading, setLoading]           = useState(true)
+  // ── UI state only (data lives in Zustand store) ────────────
+  const [keyword, setKeyword]         = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [isScouting, setIsScouting]   = useState(false)
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [sourceFilter, setSourceFilter] = useState('All')
   const [sentFilter, setSentFilter]     = useState('All')
 
-  // ── Fetch intake vault ─────────────────────────────────────
-  const fetchIntake = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/intake-vault`)
-      const data = await res.json()
-      if (data.status === 'success') {
-        setIntakeRecords(data.records || [])
-      }
-    } catch (err) {
-      console.error('Failed to fetch intake vault:', err)
-    }
-    setLoading(false)
-  }, [])
+  // ── Zustand store subscriptions ────────────────────────────
+  const intakeRecords  = useAyuStore(s => s.intakeRecords)
+  const vaultLoading   = useAyuStore(s => s.vaultLoading)
+  const refreshIntake  = useAyuStore(s => s.refreshIntake)
+  const loading = vaultLoading && intakeRecords.length === 0  // Only show spinner on first load
 
-  useEffect(() => { fetchIntake() }, [fetchIntake])
-  // Auto-refresh when Dashboard fires analysis complete event
-  useDataRefresh(fetchIntake)
+  // ── Initial load + auto-refresh ───────────────────────────
+  useEffect(() => {
+    const store = useAyuStore.getState()
+    if (store.intakeRecords.length === 0) store.refreshIntake()
+  }, [])
+  useDataRefresh(refreshIntake)  // Safety net: legacy event bus
 
   // ── Scout handler ──────────────────────────────────────────
   const handleFetchSignals = async () => {
