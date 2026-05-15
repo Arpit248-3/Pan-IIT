@@ -18,7 +18,7 @@ import {
   MdAutoFixHigh, MdRefresh, MdOpenInNew, MdBolt,
   MdCheckCircle, MdRadioButtonChecked, MdInfoOutline,
 } from 'react-icons/md'
-import { SiTwitter } from 'react-icons/si'
+import { SiX } from 'react-icons/si'
 import ProjectSetupWizard from '../components/ProjectSetupWizard'
 import { API_BASE } from '../config'
 
@@ -207,7 +207,7 @@ function ProjectCard({ project, currentUser, onViewDetails, onDelete, onEdit }) 
               {project.name}
             </h3>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <SiTwitter size={11} style={{ color: '#1DA1F2', flexShrink: 0 }} />
+              <SiX size={11} style={{ color: '#1DA1F2', flexShrink: 0 }} />
               <span style={{ fontSize: 11, color: 'var(--muted)' }}>Twitter</span>
             </div>
           </div>

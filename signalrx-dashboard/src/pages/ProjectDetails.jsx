@@ -7,7 +7,7 @@ import {
   MdArrowBack, MdEdit, MdDelete, MdRefresh, MdPlayArrow, MdPause,
   MdCheckCircle, MdBolt, MdOpenInNew, MdInfoOutline,
 } from 'react-icons/md'
-import { SiTwitter } from 'react-icons/si'
+import { SiX } from 'react-icons/si'
 import { API_BASE } from '../config'
 
 const STATUS_CONFIG = {
@@ -210,7 +210,7 @@ export default function ProjectDetails({ projectId, currentUser, onNavigate }) {
             <div>
               <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 4 }}>Source</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 700 }}>
-                <SiTwitter style={{ color: '#1DA1F2' }} /> Twitter
+                <SiX style={{ color: '#1DA1F2' }} /> Twitter
               </div>
             </div>
             <div>

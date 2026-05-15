@@ -40,14 +40,31 @@ FALLBACK_PORTS = [PREFERRED_PORT, 8081, 8082, 8083, 8000]
 
 
 def port_in_use(port: int) -> bool:
-    """Check if a TCP port is currently bound."""
+    """
+    Check if a TCP port is already bound on ANY interface.
+    Uses two methods for reliability on Windows:
+      1. Try binding on 0.0.0.0 (catches processes bound to all interfaces)
+      2. Try a TCP connect to 127.0.0.1 (catches any server responding)
+    """
+    # Method 1: Try to bind on 0.0.0.0
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            s.bind(("127.0.0.1", port))
-            return False
+            s.bind(("0.0.0.0", port))
+            # Bind succeeded → port is free
         except OSError:
-            return True
+            return True  # Already bound
+
+    # Method 2: Try connecting (handles edge cases on Windows)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        try:
+            s.connect(("127.0.0.1", port))
+            return True  # Something responded
+        except (ConnectionRefusedError, socket.timeout, OSError):
+            pass
+
+    return False
 
 
 def kill_pid_on_port(port: int) -> bool:
