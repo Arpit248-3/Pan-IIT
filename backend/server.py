@@ -157,9 +157,9 @@ class LoginRequest(BaseModel):
 
 
 class HelpQueryRequest(BaseModel):
-    user_id: int
+    user_id: object   # Accept int OR str from localStorage (both valid)
     user_email: str
-    user_name: str
+    user_name: str = ''
     question: str
 
 
@@ -979,59 +979,23 @@ async def answer_help_query_endpoint(query_id: int, req: AnswerQueryRequest):
 
 
 # ============================================================
-# ENDPOINT 18: SELF-HEALING AGENTIC CRAWLER  (/api/run-crawler)
 # ============================================================
-class CrawlerRequest(BaseModel):
-    url: str
-    keyword: str = "drug"
-
-
+# ENDPOINT 18: CRAWLER — now handled by crawler_routes.py
+# Routes: POST /api/crawler/run, GET /api/crawler/logs/{id},
+#         GET /api/crawler/session/{id}, GET /api/crawler/health
+#         GET /api/sources
+# These are registered via app.include_router(crawler_router)
+# DO NOT add @app.post('/api/crawler/run') here — it would shadow
+# the real implementation in routes/crawler_routes.py
+# ============================================================
 @app.post("/api/run-crawler")
-async def run_crawler_legacy(req: CrawlerRequest):
-    """Legacy endpoint alias — delegates to /api/crawler/run."""
-    return await crawler_run(req)
-
-
-@app.post("/api/crawler/run")
-async def crawler_run(req: CrawlerRequest):
-    """
-    Execute the live self-healing crawler against a real URL.
-    Returns the execution logs array and extracted records.
-    """
-    url = req.url.strip()
-    keyword = req.keyword.strip() or "drug"
-
-    try:
-        result = await asyncio.to_thread(run_live_agentic_crawler, url, keyword)
-        logs = result.get("logs", [])
-        records = result.get("records", [])
-        if not logs:
-            raise ValueError("Crawler returned no logs")
-        return {"status": "success", "logs": logs, "records": records}
-    except Exception as e:
-        print(f"[CRAWLER-RUN] Real crawler error: {type(e).__name__}: {e}")
-        # Rich self-healing simulation fallback
-        domain = url.split('/')[2] if '/' in url else url
-        fallback_logs = [
-            f"[SYSTEM] Initializing Agentic Crawler for keyword: '{keyword}'...",
-            f"[INFO] Connecting to target: {url}",
-            f"[INFO] Fetching HTML DOM from {domain}...",
-            f"[INFO] DOM fetched. Size: 284 KB. Parsing structure...",
-            f"[ERROR] Critical Failure: Selector 'div.post-content-old' not found in DOM.",
-            f"[ERROR] Legacy selector map is outdated. Page structure has changed.",
-            f"[AGENT] Initiating Vision-Based Self-Healing Protocol...",
-            f"[AGENT] Scanning {domain} DOM tree for semantic content patterns...",
-            f"[AGENT] Analyzing 47 candidate elements using structural heuristics...",
-            f"[AGENT] Detected content wrapper — confidence: 96%",
-            f"[AGENT] SUCCESS. New CSS Selector generated: 'article.mw-parser-output p'.",
-            f"[AGENT] Persisting healed selector to scraper config registry...",
-            f"[INFO] Retrying extraction with healed selector...",
-            f"[INFO] Scanning for keyword '{keyword}' in extracted posts...",
-            f"[INFO] PII Masking engine engaged — anonymizing patient identifiers...",
-            f"[SUCCESS] 12 records extracted. Masking PII and routing to database.",
-            f"[SUCCESS] Self-healing complete. Config updated — future crawls will succeed automatically.",
-        ]
-        return {"status": "success", "logs": fallback_logs, "records": []}
+async def run_crawler_legacy_redirect():
+    """Legacy redirect — use POST /api/crawler/run instead."""
+    return {
+        "status": "deprecated",
+        "message": "Use POST /api/crawler/run with CrawlerRunRequest body",
+        "new_endpoint": "/api/crawler/run"
+    }
 
 
 # ============================================================
