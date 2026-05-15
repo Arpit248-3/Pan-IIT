@@ -95,30 +95,30 @@ def kill_pid_on_port(port: int) -> bool:
 def find_free_port() -> int:
     """
     Iterate over candidate ports.
-    For each occupied port: kill zombie → wait 1 s → re-check → move on.
+    For each occupied port: kill zombie -> wait 1 s -> re-check -> move on.
     """
-    sep = "─" * 58
+    sep = "=" * 58
     print(f"\n{sep}")
-    print("  AyuScout V2 — Port Manager")
+    print("  AyuScout V2 -- Port Manager")
     print(sep)
 
     for port in FALLBACK_PORTS:
         if not port_in_use(port):
-            print(f"   [PORT-MGR] ✅ Port {port} is free")
+            print(f"   [PORT-MGR] OK  Port {port} is free")
             return port
 
-        print(f"   [PORT-MGR] Port {port} is occupied — trying to free it …")
+        print(f"   [PORT-MGR] Port {port} is occupied -- trying to free it ...")
         killed = kill_pid_on_port(port)
         if killed:
             time.sleep(1.2)       # Windows needs ~1 s for socket teardown
             if not port_in_use(port):
-                print(f"   [PORT-MGR] ✅ Port {port} freed successfully")
+                print(f"   [PORT-MGR] OK  Port {port} freed successfully")
                 return port
-        print(f"   [PORT-MGR] ⚠️  Port {port} still busy — trying next port")
+        print(f"   [PORT-MGR] WARN Port {port} still busy -- trying next port")
 
     raise RuntimeError(
         f"All candidate ports are occupied: {FALLBACK_PORTS}\n"
-        "  → Manually close Python/Node/uvicorn processes and retry."
+        "  -> Manually close Python/Node/uvicorn processes and retry."
     )
 
 
@@ -126,25 +126,34 @@ def main():
     try:
         active_port = find_free_port()
     except RuntimeError as e:
-        print(f"\n❌  {e}\n")
+        print(f"\nERROR: {e}\n")
         sys.exit(1)
 
     if active_port != PREFERRED_PORT:
-        print(f"\n   ⚠️  Preferred port {PREFERRED_PORT} busy → running on {active_port}")
-        print(f"   💡 Set BACKEND_PORT={active_port} in backend/.env to prefer this port.\n")
+        print(f"\n   WARN: Preferred port {PREFERRED_PORT} busy -> running on {active_port}")
+        print(f"   TIP:  Set BACKEND_PORT={active_port} in backend/.env to prefer this port.\n")
 
     # Write active port for frontend sync
     (_root / ".active_port").write_text(str(active_port))
 
-    print(f"\n{'═'*58}")
-    print(f"   ✅ Backend  → http://localhost:{active_port}")
-    print(f"   ✅ API Docs → http://localhost:{active_port}/docs")
-    print(f"   ✅ Frontend → http://localhost:5173  (run: npm run dev)")
-    print(f"{'═'*58}\n")
+    print(f"\n{'='*58}")
+    print(f"   OK  Backend  -> http://localhost:{active_port}")
+    print(f"   OK  API Docs -> http://localhost:{active_port}/docs")
+    print(f"   OK  Frontend -> http://localhost:5173  (run: npm run dev)")
+    print(f"{'='*58}\n")
 
     # Set the port for server.py to pick up
     os.environ["BACKEND_PORT"] = str(active_port)
     os.environ["PORT"] = str(active_port)
+
+    # Force UTF-8 output so emoji/Unicode in crawler.py etc. don't crash on Windows CP1252
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    os.environ["PYTHONUTF8"] = "1"
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass  # Python < 3.7 fallback
 
     # Hand off to uvicorn directly (avoids double-spawn on Windows)
     import uvicorn
@@ -155,6 +164,8 @@ def main():
         reload=False,          # CRITICAL: reload=True causes WinError 10048 via multiprocessing
         log_level="info",
     )
+
+
 
 
 if __name__ == "__main__":

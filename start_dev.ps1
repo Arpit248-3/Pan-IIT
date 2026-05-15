@@ -42,7 +42,7 @@ Start-Sleep -Milliseconds 800
 
 # ── Step 2: Start backend in new terminal ───────────────────
 Write-Host "`n[2/3] Starting backend (python start.py)..." -ForegroundColor Yellow
-$backendCmd = "cd '$BACKEND_DIR'; python start.py; Read-Host 'Backend stopped — press Enter to close'"
+$backendCmd = "cd '$BACKEND_DIR'; python -X utf8 start.py; Read-Host 'Backend stopped -- press Enter to close'"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd -WindowStyle Normal
 
 Write-Host "   ✅ Backend terminal launched" -ForegroundColor Green
