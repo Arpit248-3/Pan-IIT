@@ -128,12 +128,24 @@ export default function DataExplorer() {
   const handleAnalyzeVault = async () => {
     setIsAnalyzing(true)
     try {
-      const res = await fetch(`${API_BASE}/api/process-vault`)
+      // Use repair-pending-intake: full workflow (AI + save intelligence + notifications)
+      const res = await fetch(`${API_BASE}/api/repair-pending-intake`, { method: 'POST' })
       const data = await res.json()
-      alert(`AI Intelligence Success: Processed ${data.total_processed} new safety signals.`)
+      const msg = data.repaired !== undefined
+        ? `Processed: ${data.repaired} repaired, ${data.failed} failed.`
+        : `Status: ${data.status}`
+      alert(`AI Intelligence: ${msg}`)
       fetchIntake()
     } catch {
-      alert('Analysis failed. Check your Python terminal for agent logs.')
+      // Fallback to process-vault
+      try {
+        const res2 = await fetch(`${API_BASE}/api/process-vault`)
+        const data2 = await res2.json()
+        alert(`AI Intelligence: Processed ${data2.total_processed} signals.`)
+        fetchIntake()
+      } catch {
+        alert('Analysis failed. Check your Python terminal for agent logs.')
+      }
     } finally {
       setIsAnalyzing(false)
     }
@@ -173,17 +185,17 @@ export default function DataExplorer() {
       .map(([name, count]) => ({ name, count, fill: SENT_COLORS[name] }))
   }, [filteredRecords])
 
-  // ── Chart 2: Emotion line chart — emotion category → user count ─
+  // ── Chart 2: Emotion line chart — uses backend emotion field if present ─
   const emotionLineData = useMemo(() => {
     const negativeRecords = filteredRecords.filter(r => r.sentiment === 'Negative')
     const counts = {}
     negativeRecords.forEach(r => {
-      const emo = categorizeEmotion(r.content || '')
+      // Prefer backend emotion; fall back to frontend keyword categorization
+      const emo = r.emotion || categorizeEmotion(r.content || '')
       counts[emo] = (counts[emo] || 0) + 1
     })
-    // Use fixed order so the line is always continuous and meaningful
     return ALL_EMOTIONS.map(emo => ({
-      emotion: emo.split(' / ')[0], // Short label for X-axis
+      emotion: emo.split(' / ')[0],
       fullName: emo,
       users: counts[emo] || 0,
     }))
@@ -437,7 +449,7 @@ export default function DataExplorer() {
                   <th>ID</th>
                   <th>Content (PII Masked)</th>
                   <th>Platform</th>
-                  <th>Drug</th>
+                  <th>Drug / Event</th>
                   <th>Sentiment</th>
                   <th>Emotion</th>
                   <th>Status</th>
@@ -446,17 +458,33 @@ export default function DataExplorer() {
               </thead>
               <tbody>
                 {filteredRecords.map(p => {
-                  // ── Frontend safety layer: sanitize display text ──────
-                  const rawContent   = p.content || ''
-                  const safeContent  = frontendSanitize(rawContent)   // strips emails/phones/Aadhaar/PAN
-                  const hasMasked    = hasPiiTokens(safeContent)      // detects [USER_001] vault tokens
+                  const rawContent  = p.content || ''
+                  const safeContent = frontendSanitize(rawContent)
+                  const hasMasked   = hasPiiTokens(safeContent) || p.pii_masked
 
                   const sentiment = p.sentiment || 'Unknown'
-                  const emotion   = sentiment === 'Negative' ? categorizeEmotion(safeContent) : '—'
+                  // Use backend emotion directly; fall back to keyword categorizer on masked text
+                  const backendEmotion = p.emotion || ''
+                  const emotion = backendEmotion ||
+                    (sentiment === 'Negative' ? categorizeEmotion(safeContent) : '')
+
                   const sentBadge = sentiment === 'Positive' ? 'success'
                     : sentiment === 'Neutral'  ? 'warning'
                     : sentiment === 'Negative' ? 'danger'
                     : 'neutral'
+
+                  // Status: prefer p.status, fall back to has_analysis
+                  const statusLabel = p.status === 'analyzed' ? 'Analyzed'
+                    : p.status === 'failed' ? 'Failed'
+                    : p.has_analysis ? 'Analyzed'
+                    : 'Pending'
+                  const statusBadge = statusLabel === 'Analyzed' ? 'success'
+                    : statusLabel === 'Failed' ? 'danger' : 'warning'
+
+                  // Drug: prefer joined intelligence drug, fall back to drug_keyword
+                  const drugDisplay = p.drug && p.drug !== 'Unknown' ? p.drug : (p.drug_keyword || '—')
+                  const eventDisplay = p.event && p.event !== 'Unknown' ? p.event : ''
+
                   return (
                     <tr key={p.id}>
                       <td><strong>INT-{String(p.id).padStart(3, '0')}</strong></td>
@@ -467,18 +495,21 @@ export default function DataExplorer() {
                         </div>
                       </td>
                       <td><span className="badge badge-neutral">{(p.platform || 'Unknown').split('(')[0].trim()}</span></td>
-                      <td style={{ fontWeight: 600, color: 'var(--blue)' }}>{p.drug_keyword || '—'}</td>
+                      <td>
+                        <div style={{ fontWeight: 600, color: 'var(--blue)', fontSize: 13 }}>{drugDisplay}</div>
+                        {eventDisplay && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>{eventDisplay}</div>}
+                      </td>
                       <td>
                         <span className={`badge badge-${sentBadge}`}>{sentiment}</span>
                       </td>
                       <td style={{ fontSize: 11, color: 'var(--text2)' }}>
-                        {emotion !== '—'
+                        {emotion
                           ? <span style={{ background: 'rgba(239,68,68,0.08)', color: '#EF4444', padding: '2px 8px', borderRadius: 99, fontWeight: 600 }}>{emotion}</span>
                           : <span style={{ color: 'var(--muted)' }}>—</span>}
                       </td>
                       <td>
-                        <span className={`badge badge-${p.has_analysis ? 'success' : 'warning'}`}>
-                          {p.has_analysis ? '✓ Analyzed' : '⏳ Pending'}
+                        <span className={`badge badge-${statusBadge}`}>
+                          {statusLabel === 'Analyzed' ? '✓ Analyzed' : statusLabel === 'Failed' ? '✕ Failed' : '⏳ Pending'}
                         </span>
                       </td>
                       <td style={{ fontSize: 12, color: 'var(--muted)' }}>

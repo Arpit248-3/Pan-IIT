@@ -248,7 +248,7 @@ def verify_password(password: str, stored: str) -> bool:
 def init_db():
     """Create all tables and seed admin user if not exists."""
     Base.metadata.create_all(engine)
-    print("📊 Database initialized (SQLAlchemy ORM)")
+    print(" Database initialized (SQLAlchemy ORM)")
 
     # Backward-compatible migrations
     _safe_migrations = [
@@ -281,10 +281,10 @@ def init_db():
             )
             session.add(admin)
             session.commit()
-            print("✅ Admin user seeded: admin@ayuscout.ai / Admin@123")
+            print(" Admin user seeded: admin@ayuscout.ai / Admin@123")
     except Exception as e:
         session.rollback()
-        print(f"⚠️ Admin seed skipped: {e}")
+        print(f"[WARN] Admin seed skipped: {e}")
     finally:
         session.close()
 
@@ -341,7 +341,7 @@ def update_status(intake_id, status):
             session.commit()
     except Exception as e:
         session.rollback()
-        print(f"   ❌ Status update failed: {e}")
+        print(f"   [DB-ERROR] Status update failed: {e}")
     finally:
         session.close()
 
@@ -523,6 +523,26 @@ def save_intelligence(intake_id, result):
                 else:
                     sentiment = "Neutral"
         
+        # --- EMOTION DERIVATION ---
+        # Derive emotion from event/sentiment keywords; store as prefix in reasoning
+        _ev_lower = (event or '').lower()
+        _sent_lower = (sentiment or '').lower()
+        if any(kw in _ev_lower for kw in ['rash', 'swelling', 'angioedema', 'allergy', 'anaphylax', 'hives', 'urticaria', 'pruritus']):
+            emotion = 'Concern'
+        elif any(kw in _ev_lower for kw in ['nausea', 'vomit', 'dizzi', 'pain', 'dyspnoea', 'breathless', 'headache', 'abdominal']):
+            emotion = 'Distress'
+        elif any(kw in _ev_lower for kw in ['hepato', 'nephro', 'jaundice', 'seizure', 'cardiac', 'stroke', 'coma']):
+            emotion = 'Fear / Anxiety'
+        elif _sent_lower == 'negative':
+            emotion = 'General Negative'
+        elif _sent_lower == 'positive':
+            emotion = 'Relief'
+        else:
+            emotion = 'Neutral'
+        # Prefix emotion into reasoning so it can be extracted later
+        if emotion and not reasoning.startswith('[Emotion:'):
+            reasoning = f'[Emotion: {emotion}] {reasoning}'
+
         # WHO-UMC details
         umc_details = doctor_data.get('who_umc_details', {})
         who_umc_score = umc_details.get('score', 0) if isinstance(umc_details, dict) else 0
@@ -621,6 +641,7 @@ def get_all_intelligence():
                 "confidence": r.confidence,
                 "severity": r.severity,
                 "reasoning": sanitize_pii_for_display(r.reasoning or ""),
+                "emotion": (lambda raw: re.match(r'^\[Emotion:\s*([^\]]+)\]', raw).group(1).strip() if re.match(r'^\[Emotion:\s*([^\]]+)\]', raw) else '')(r.reasoning or ''),
                 "pubmed_link": r.pubmed_link,
                 "concomitant_drugs": r.concomitant_drugs,
                 "time_to_onset": r.time_to_onset,
@@ -808,6 +829,7 @@ def get_all_intake():
                 "confidence": intel.confidence if intel else "Unknown",
                 "severity": intel.severity if intel else "Unknown",
                 "has_analysis": intel is not None,
+                "emotion": (lambda raw: re.match(r'^\[Emotion:\s*([^\]]+)\]', raw).group(1).strip() if intel and raw and re.match(r'^\[Emotion:\s*([^\]]+)\]', raw) else '')(intel.reasoning if intel else ''),
                 "intelligence_id": intel.id if intel else None,
                 "e2b_available": intel is not None,
                 # PII safety metadata
@@ -989,7 +1011,7 @@ def create_project(name: str, keywords: list, sources: list, scraper_config: dic
         return _serialize_project(proj)
     except Exception as e:
         session.rollback()
-        print(f"   ❌ Project create failed: {e}")
+        print(f"   [DB-ERROR] Project create failed: {e}")
         return None
     finally:
         session.close()
@@ -1161,7 +1183,7 @@ def upsert_settings(user_id: int, data: dict):
         return _serialize_settings(s)
     except Exception as e:
         session.rollback()
-        print(f"   ❌ Settings upsert failed: {e}")
+        print(f"   [DB-ERROR] Settings upsert failed: {e}")
         return None
     finally:
         session.close()
@@ -1204,7 +1226,7 @@ def create_notification(title: str, desc: str = '', icon: str = 'info',
         return _serialize_notification(n)
     except Exception as e:
         session.rollback()
-        print(f"   ❌ Notification create failed: {e}")
+        print(f"   [DB-ERROR] Notification create failed: {e}")
         return None
     finally:
         session.close()
@@ -1311,7 +1333,7 @@ def create_audit_log(user_id: int = None, user_email: str = None,
         return log.id
     except Exception as e:
         session.rollback()
-        print(f"   ⚠️ Audit log skipped: {e}")
+        print(f"   [WARN] Audit log skipped: {e}")
         return None
     finally:
         session.close()
