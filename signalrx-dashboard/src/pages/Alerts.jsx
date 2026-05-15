@@ -456,11 +456,13 @@ export default function Alerts({ openModal }) {
   }, [])
 
   useEffect(() => {
-    const store = useAyuStore.getState()
-    if (store.intelligenceRecords.length === 0) store.refreshIntelligence()
+    refreshIntelligence()
     fetchTrends()
-  }, [fetchTrends])
-  useDataRefresh(refreshIntelligence)  // Safety net: legacy event bus
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshIntelligence() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [fetchTrends, refreshIntelligence])
+  useDataRefresh(refreshIntelligence)
 
   /* ── E2B Export ───────────────────────────────────────────── */
   const handleExportE2B = async (recordId) => {

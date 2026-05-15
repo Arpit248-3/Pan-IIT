@@ -1066,31 +1066,41 @@ class ProjectCreateRequest(BaseModel):
 
 
 @app.post("/api/projects")
-async def create_project_endpoint(req: ProjectCreateRequest):
-    """Persist a new monitoring project and return the saved record."""
-    if not req.name.strip():
+async def create_project_endpoint(request: Request):
+    """
+    Persist a new monitoring project.
+    Accepts raw JSON body — no Pydantic validation so owner_id can be int or str.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    name = str(body.get("name", "")).strip()
+    if not name:
         raise HTTPException(status_code=400, detail="Project name is required")
-    # Safely cast owner_id — localStorage can send int or string
-    safe_owner_id = None
-    if req.owner_id is not None:
-        try:
-            safe_owner_id = int(req.owner_id)
-        except (TypeError, ValueError):
-            safe_owner_id = None
+
+    # Safely resolve owner_id (may be int, string, or None from localStorage)
+    raw_oid = body.get("owner_id")
+    try:
+        safe_owner_id = int(raw_oid) if raw_oid is not None else None
+    except (TypeError, ValueError):
+        safe_owner_id = None
+
     project = create_project(
-        name=req.name.strip(),
-        keywords=req.keywords,
-        sources=req.sources or ['twitter'],
-        scraper_config=req.scraper_config,
-        agentic_enabled=req.agentic_enabled,
-        schedule_interval=req.schedule_interval,
+        name=name,
+        keywords=body.get("keywords") or [],
+        sources=body.get("sources") or ["twitter"],
+        scraper_config=body.get("scraper_config") or {},
+        agentic_enabled=bool(body.get("agentic_enabled", False)),
+        schedule_interval=str(body.get("schedule_interval", "Daily")),
         owner_id=safe_owner_id,
-        owner_email=req.owner_email,
-        source_type=req.source_type or 'social',
-        source_url=req.source_url,
+        owner_email=body.get("owner_email"),
+        source_type=str(body.get("source_type", "social")),
+        source_url=body.get("source_url"),
     )
     if not project:
-        raise HTTPException(status_code=500, detail="Failed to save project")
+        raise HTTPException(status_code=500, detail="Failed to save project to database")
     return {"status": "success", "project": project}
 
 

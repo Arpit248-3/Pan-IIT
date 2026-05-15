@@ -58,9 +58,11 @@ export default function Reports({ openModal }) {
 
   // ── Initial load ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const store = useAyuStore.getState()
-    if (store.reports.length === 0) store.refreshReports()
-  }, [])
+    refreshReports()
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshReports() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [refreshReports])
   useDataRefresh(refreshReports)
 
   // ── Auto-backfill: trigger FDA analysis for Pending rows on first load ────

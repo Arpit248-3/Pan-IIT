@@ -130,9 +130,12 @@ export default function DataExplorer() {
 
   // ── Initial load + auto-refresh ───────────────────────────
   useEffect(() => {
-    const store = useAyuStore.getState()
-    if (store.intakeRecords.length === 0) store.refreshIntake()
-  }, [])
+    // Always refresh when tab is navigated to — picks up wizard-scraped data
+    refreshIntake()
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshIntake() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [refreshIntake])
   useDataRefresh(refreshIntake)  // Safety net: legacy event bus
 
   // ── Scout handler ──────────────────────────────────────────

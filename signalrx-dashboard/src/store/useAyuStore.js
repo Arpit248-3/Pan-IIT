@@ -278,6 +278,30 @@ const useAyuStore = create((set, get) => ({
     }))
   },
 
+  // ── Background auto-poll (30s) ────────────────────────────────────────────
+  // Call startAutoRefresh(userId) once from App root to keep all tabs live.
+  _pollTimer: null,
+
+  startAutoRefresh: (userId) => {
+    const store = get()
+    if (store._pollTimer) return          // already running
+    store.refreshAll(userId)              // immediate first fetch
+    const timer = setInterval(() => {
+      get().refreshAll(userId)
+    }, 30_000)
+    set({ _pollTimer: timer })
+    log('startAutoRefresh', { interval: '30s', userId })
+  },
+
+  stopAutoRefresh: () => {
+    const { _pollTimer } = get()
+    if (_pollTimer) {
+      clearInterval(_pollTimer)
+      set({ _pollTimer: null })
+      log('stopAutoRefresh', {})
+    }
+  },
+
 }))
 
 export default useAyuStore

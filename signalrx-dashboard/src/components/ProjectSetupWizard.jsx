@@ -8,7 +8,8 @@ import {
   MdSmartToy, MdTerminal, MdContentCopy, MdDone
 } from 'react-icons/md'
 
-import { API_BASE } from '../config';
+import { API_BASE } from '../config'
+import useAyuStore from '../store/useAyuStore'
 
 
 const SOURCES = [
@@ -65,6 +66,8 @@ function LatencyOption({ option, selected, onSelect, disabled }) {
 }
 
 export default function ProjectSetupWizard({ onClose, currentUser }) {
+  const refreshAll = useAyuStore(s => s.refreshAll)
+  const user = currentUser || (() => { try { return JSON.parse(localStorage.getItem('ayuscout_user') || 'null') } catch { return null } })()
   const [projectName, setProjectName]   = useState('')
   const [keywords, setKeywords]         = useState([])
   const [keywordInput, setKeywordInput] = useState('')
@@ -288,6 +291,10 @@ export default function ProjectSetupWizard({ onClose, currentUser }) {
       }
 
       pushLog('[SUCCESS] Deployment complete. Check Data Explorer, Alerts, Overview, and Trends.')
+
+      // Refresh ALL tabs so scraped data appears immediately
+      const userId = user?.id ?? currentUser?.id
+      refreshAll(userId).catch(() => {})
 
       setTimeout(() => onClose?.(newProject), 1800)
 

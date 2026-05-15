@@ -72,6 +72,8 @@ export default function App() {
         const u = JSON.parse(stored)
         setCurrentUser(u)
         if (u?.role === 'admin') setPage('admin-help')
+        // Resume background data polling for restored session
+        useAyuStore.getState().startAutoRefresh(u?.id)
       }
     } catch { /* ignore */ }
     setAuthChecked(true)
@@ -81,11 +83,12 @@ export default function App() {
     localStorage.setItem('ayuscout_user', JSON.stringify(user))
     setCurrentUser(user)
     setPage(user.role === 'admin' ? 'admin-help' : 'dashboard')
-    // Seed the store with fresh data after login
-    useAyuStore.getState().refreshAll(user?.id)
+    // Start background 30s auto-poll — keeps ALL tabs live
+    useAyuStore.getState().startAutoRefresh(user?.id)
   }
 
   const handleLogout = () => {
+    useAyuStore.getState().stopAutoRefresh()
     localStorage.removeItem('ayuscout_user')
     setCurrentUser(null)
     setPage('dashboard')
