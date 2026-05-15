@@ -82,8 +82,10 @@ export function normalizeNotification(n) {
 export function normalizeReport(r) {
   if (!r || typeof r !== 'object') return null
   return {
+    id:          r.id || null,
     record_id:   r.record_id || null,
     title:       r.title || 'Untitled',
+    type:        r.type || 'Signal',
     drug:        r.drug || 'Unknown',
     event:       r.event || 'Unknown',
     severity:    r.severity || 'Unknown',
@@ -94,6 +96,8 @@ export function normalizeReport(r) {
     pii_masked:  r.pii_masked || false,
     pii_types:   r.pii_types_detected || [],
     status:      r.status || 'pending',
+    statusColor: r.statusColor || 'neutral',
+    author:      r.author || 'AyuScout V2 AI',
     e2b_available: r.e2b_available || false,
     created_at:  r.created_at || null,
   }

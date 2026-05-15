@@ -236,7 +236,7 @@ export default function Reports({ openModal }) {
           <option>Reviewed</option>
         </select>
         <button className="btn btn-secondary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-          onClick={fetchReports} disabled={loading}>
+          onClick={refreshReports} disabled={loading}>
           <MdRefresh size={16} className={loading ? 'spin' : ''} />
           {loading ? 'Loading...' : 'Refresh'}
         </button>

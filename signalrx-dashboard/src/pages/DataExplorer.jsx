@@ -275,7 +275,7 @@ export default function DataExplorer() {
           ))}
         </select>
 
-        <button className="btn btn-ghost btn-sm" onClick={fetchIntake} disabled={loading}
+        <button className="btn btn-ghost btn-sm" onClick={refreshIntake} disabled={loading}
           style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
           <MdRefresh size={16} className={loading ? 'spin' : ''} /> Refresh
         </button>

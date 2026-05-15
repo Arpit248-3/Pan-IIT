@@ -100,7 +100,7 @@ export default function Notifications({ currentUser }) {
               {unreadCount} unread
             </span>
           )}
-          <button className="btn btn-ghost btn-sm" onClick={fetchNotifications}
+          <button className="btn btn-ghost btn-sm" onClick={doRefresh}
             disabled={loading} title="Reload notifications"
             style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <MdRefresh size={16} className={loading ? 'spin' : ''} />
