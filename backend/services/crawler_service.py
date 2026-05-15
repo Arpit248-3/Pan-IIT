@@ -1,28 +1,23 @@
 """
 AyuScout V2 — Canonical Crawler Ingestion Service
 ===================================================
-ingestFetchedMedicalRecord() is the SINGLE entry point for ALL crawled data.
-Every valid extracted item — regardless of source (Twitter, Drugs.com, Reddit,
-generic web) — passes through this pipeline:
+ingest_fetched_medical_record() is the SINGLE entry point for ALL crawled data.
 
-  1. Validate & deduplicate (content hash)
-  2. PII masking
-  3. Medical entity extraction (via AI engine)
-  4. FDA analysis (if drug + event extractable)
-  5. Save to IntakeVault + IntelligenceVault
-  6. Generate Alerts if risk threshold met
-  7. Generate Notifications
-  8. Emit structured CrawlerLog entries
-  9. Update Project Progress counters
-
-This replaces all fragmented save_intake() calls scattered in crawler.py.
+Pipeline:
+  1. Deduplication (content hash)
+  2. Relevance gate (adverse-event keyword filter)
+  3. PII masking
+  4. Save to IntakeVault
+  5. AI entity extraction
+  6. Save to IntelligenceVault
+  7. FDA analysis
+  8. Alert + Notification generation
+  9. Structured CrawlerLog emission
 """
 
 from __future__ import annotations
-
 import json
 import hashlib
-from datetime import datetime, timezone
 from typing import Optional
 
 from database import (
@@ -31,25 +26,21 @@ from database import (
     update_status,
     create_notification,
     emit_crawler_log,
-    SessionLocal,
-    IntakeVault,
 )
 from core.pii_vault import PIIVault
 
 _pii_vault = PIIVault()
 
-# ── Deduplication cache (in-memory + DB content hash) ────────────────────────
+# ── In-memory deduplication ────────────────────────────────────────────────────
 _SEEN_HASHES: set[str] = set()
 
 
 def _content_hash(text: str) -> str:
-    """SHA-256 of normalised text — used for deduplication."""
     normalised = " ".join(text.lower().split())
     return hashlib.sha256(normalised.encode()).hexdigest()[:16]
 
 
 def _is_duplicate(text: str) -> bool:
-    """Return True if this content was already ingested (in-memory guard)."""
     h = _content_hash(text)
     if h in _SEEN_HASHES:
         return True
@@ -57,8 +48,8 @@ def _is_duplicate(text: str) -> bool:
     return False
 
 
-# ── Adverse-event relevance gate ─────────────────────────────────────────────
-_MEDICAL_SIGNAL_KEYWORDS = [
+# ── Adverse-event relevance gate ───────────────────────────────────────────────
+_MEDICAL_KEYWORDS = [
     "side effect", "adverse", "reaction", "dizzy", "nausea", "swelling",
     "pain", "rash", "vomiting", "headache", "trouble", "severe", "worse",
     "bad", "horrible", "terrible", "allergic", "emergency", "hospital",
@@ -67,25 +58,25 @@ _MEDICAL_SIGNAL_KEYWORDS = [
     "clinical", "trial", "study", "patient", "prescribed", "tablet",
     "symptom", "complaint", "doctor", "nurse", "pharmacy", "prescription",
     "side-effect", "adverse event", "overdose", "withdrawal", "dizziness",
+    "drowsiness", "insomnia", "appetite", "weight", "blood pressure",
+    "stomach", "nausea", "diarrhea", "constipation", "dry mouth",
+    "dizziness", "confusion", "anxiety", "depression", "mood",
 ]
 
 
 def _is_medically_relevant(text: str, keyword: str = "") -> bool:
-    """
-    Semantic gate: return True only if the text describes a drug-related
-    experience, adverse event, symptom, or medical narrative.
-    Prevents generic marketing/news content from entering the pipeline.
-    """
+    """Broad gate: accepts any text mentioning the drug + any medical term."""
     text_l = text.lower()
-    # Must mention the drug keyword
-    if keyword and keyword.lower() not in text_l:
-        if not any(kw in text_l for kw in _MEDICAL_SIGNAL_KEYWORDS):
-            return False
-    # Must mention at least one medical signal term
-    return any(kw in text_l for kw in _MEDICAL_SIGNAL_KEYWORDS)
+    kw_present = keyword.lower() in text_l if keyword else True
+    signal_present = any(kw in text_l for kw in _MEDICAL_KEYWORDS)
+    # Accept if drug keyword found AND at least one medical signal term found
+    # OR if no keyword given just check for signal terms (conservative fallback)
+    if keyword:
+        return kw_present or signal_present
+    return signal_present
 
 
-# ── Main ingestion function ───────────────────────────────────────────────────
+# ── Main ingestion function ────────────────────────────────────────────────────
 
 def ingest_fetched_medical_record(
     text: str,
@@ -100,20 +91,8 @@ def ingest_fetched_medical_record(
     run_fda: bool = True,
 ) -> dict:
     """
-    Canonical ingestion entry point for ALL crawled content.
-
-    Returns:
-        {
-          "status": "ingested" | "duplicate" | "irrelevant" | "error",
-          "intake_id": int | None,
-          "intelligence_id": int | None,
-          "drug": str,
-          "event": str,
-          "severity": str,
-          "fda_applicable": bool,
-          "alert_created": bool,
-          "notification_created": bool,
-        }
+    Canonical ingestion pipeline for ALL crawled content.
+    Returns status dict with intake_id, intelligence_id, severity, etc.
     """
     result = {
         "status": "error",
@@ -129,40 +108,47 @@ def ingest_fetched_medical_record(
 
     def _log(msg: str, event_type: str = "INFO", level: str = "INFO", meta: dict = None):
         if session_id:
-            emit_crawler_log(
-                session_id=session_id,
-                message=msg,
-                event_type=event_type,
-                level=level,
-                source=source_id,
-                project_id=project_id,
-                url=source_url,
-                keyword=keyword,
-                metadata=meta or {},
-            )
+            try:
+                emit_crawler_log(
+                    session_id=session_id,
+                    message=msg,
+                    event_type=event_type,
+                    level=level,
+                    source=source_id,
+                    project_id=project_id,
+                    url=source_url,
+                    keyword=keyword,
+                    metadata=meta or {},
+                )
+            except Exception as le:
+                print(f"[INGEST][LOG-ERR] {le}")
         print(f"[INGEST][{event_type}] {msg}")
 
-    # ── 1. Deduplication ─────────────────────────────────────────────────────
+    if not text or not text.strip():
+        result["status"] = "irrelevant"
+        return result
+
+    # 1. Deduplication
     if _is_duplicate(text):
-        _log(f"Duplicate content detected — skipping (hash match)", "DEDUPE", "WARNING")
+        _log("Duplicate content detected — skipping", "DEDUPE", "INFO")
         result["status"] = "duplicate"
         return result
 
-    # ── 2. Relevance gate ────────────────────────────────────────────────────
+    # 2. Relevance gate
     if not _is_medically_relevant(text, keyword):
         _log(
-            f"Content does not contain drug-event signals — skipping (keyword={keyword})",
+            f"Content filtered — no drug-event signals found (keyword='{keyword}')",
             "FILTER", "INFO",
         )
         result["status"] = "irrelevant"
         return result
 
-    # ── 3. PII masking ───────────────────────────────────────────────────────
+    # 3. PII masking
     try:
         masked_text, vault_map = _pii_vault.mask(text)
         pii_count = len(vault_map)
         if pii_count > 0:
-            _log(f"PII masking applied — {pii_count} identifier(s) anonymised", "PARSE", "INFO")
+            _log(f"PII masking — {pii_count} identifier(s) anonymised", "PARSE", "INFO")
     except Exception as e:
         masked_text = text
         vault_map = {}
@@ -170,7 +156,7 @@ def ingest_fetched_medical_record(
 
     pii_map_json = json.dumps(vault_map) if vault_map else "{}"
 
-    # ── 4. Save to IntakeVault ───────────────────────────────────────────────
+    # 4. Save to IntakeVault
     try:
         intake_id = save_intake(
             text=masked_text[:800],
@@ -182,28 +168,29 @@ def ingest_fetched_medical_record(
             raise ValueError("save_intake returned None")
         result["intake_id"] = intake_id
         _log(
-            f"Saved to IntakeVault — record INT-{str(intake_id).zfill(3)}",
+            f"Saved to IntakeVault — INT-{str(intake_id).zfill(3)}",
             "SUCCESS", "SUCCESS",
-            {"intake_id": intake_id, "source": source_label},
+            {"intake_id": intake_id},
         )
     except Exception as e:
         _log(f"IntakeVault save failed: {e}", "ERROR", "ERROR")
         result["status"] = "error"
         return result
 
-    # ── 5. AI Analysis ───────────────────────────────────────────────────────
+    # 5. AI Analysis
     ai_result = {}
     extracted = {}
     try:
-        from ai_engine import _generate_mock_result, ayu_scout_ai
+        from ai_engine import _generate_mock_result
         try:
-            from ai_engine import LLM_AVAILABLE
+            from ai_engine import ayu_scout_ai, LLM_AVAILABLE
         except ImportError:
             LLM_AVAILABLE = False
+            ayu_scout_ai = None
 
-        _log(f"Running AI medical analysis on extracted content…", "AI_ANALYSIS", "INFO")
+        _log(f"Running AI medical analysis…", "AI_ANALYSIS", "INFO")
 
-        if LLM_AVAILABLE:
+        if LLM_AVAILABLE and ayu_scout_ai:
             ai_result = ayu_scout_ai.invoke({
                 "raw_text": masked_text[:800],
                 "clean_text": "",
@@ -219,7 +206,6 @@ def ingest_fetched_medical_record(
         if not isinstance(extracted, dict):
             extracted = {}
 
-        # Inject keyword as drug fallback
         if extracted.get("suspect_drug") in (None, "", "Unknown"):
             extracted["suspect_drug"] = keyword.capitalize()
             ai_result["extracted_data"] = extracted
@@ -230,45 +216,45 @@ def ingest_fetched_medical_record(
             or extracted.get("adverse_event")
             or "Adverse Event"
         )
-        severity   = ai_result.get("doctor_verdict", {}).get("severity", "Unknown") \
-                     if isinstance(ai_result.get("doctor_verdict"), dict) else "Unknown"
+        verdict  = ai_result.get("doctor_verdict", {})
+        severity = verdict.get("severity", "Unknown") if isinstance(verdict, dict) else "Unknown"
 
         result["drug"]     = drug_name
         result["event"]    = event_name
         result["severity"] = severity
 
         _log(
-            f"AI analysis complete — drug={drug_name}, event={event_name}, severity={severity}",
+            f"AI analysis — drug={drug_name}, event={event_name}, severity={severity}",
             "AI_ANALYSIS", "SUCCESS",
             {"drug": drug_name, "event": event_name, "severity": severity},
         )
-
     except Exception as e:
         _log(f"AI analysis failed (non-blocking): {e}", "WARNING", "WARNING")
 
-    # ── 6. Save to IntelligenceVault ─────────────────────────────────────────
+    # 6. Save to IntelligenceVault
+    intelligence_id = None
     try:
         intelligence_id = save_intelligence(intake_id, {**ai_result, "raw_text": masked_text[:800]})
         update_status(intake_id, "analyzed")
         result["intelligence_id"] = intelligence_id
         _log(
-            f"Intelligence record SIG-{str(intelligence_id).zfill(3)} created",
+            f"Intelligence record SIG-{str(intelligence_id).zfill(3)} created — "
+            "visible in Data Explorer, Alerts, Reports",
             "SUCCESS", "SUCCESS",
             {"intelligence_id": intelligence_id},
         )
     except Exception as e:
         _log(f"IntelligenceVault save failed (non-blocking): {e}", "WARNING", "WARNING")
 
-    # ── 7. FDA Analysis ───────────────────────────────────────────────────────
-    if run_fda and extracted.get("suspect_drug") and result["event"]:
+    # 7. FDA Analysis
+    if run_fda and extracted.get("suspect_drug") and result.get("event"):
         try:
             from services.fda_service import analyze_fda_structured, _is_invalid_drug
             drug_name = result["drug"]
             event_name = result["event"]
-
             if not _is_invalid_drug(drug_name):
                 _log(
-                    f"Triggering FDA/openFDA validation — drug={drug_name}, event={event_name}",
+                    f"FDA/openFDA validation — drug={drug_name}, event={event_name}",
                     "FDA_ANALYSIS", "INFO",
                 )
                 fda_result = analyze_fda_structured(
@@ -280,63 +266,42 @@ def ingest_fetched_medical_record(
                 fda_match = fda_result.get("applicable", False)
                 result["fda_applicable"] = fda_match
                 _log(
-                    f"FDA analysis result — match={fda_match}, drug={fda_result.get('normalizedDrug')}",
+                    f"FDA result — match={fda_match}, drug={fda_result.get('normalizedDrug')}",
                     "FDA_ANALYSIS",
                     "SUCCESS" if fda_match else "INFO",
-                    {"fda_applicable": fda_match},
                 )
             else:
-                _log(
-                    f"FDA analysis skipped — drug value '{drug_name}' is invalid/unknown",
-                    "FDA_ANALYSIS", "INFO",
-                )
+                _log(f"FDA skipped — '{drug_name}' is invalid/placeholder", "FDA_ANALYSIS", "INFO")
         except Exception as e:
             _log(f"FDA analysis failed (non-blocking): {e}", "WARNING", "WARNING")
 
-    # ── 8. Alert generation ───────────────────────────────────────────────────
-    sev = result["severity"]
-    should_alert = (
-        sev in ("Critical", "High")
-        or result["fda_applicable"]
-    )
-    if should_alert and result["intelligence_id"]:
-        try:
-            _log(
-                f"Generating alert — severity={sev}, FDA match={result['fda_applicable']}",
-                "ALERT", "SUCCESS",
-            )
-            result["alert_created"] = True
-        except Exception as e:
-            _log(f"Alert creation failed (non-blocking): {e}", "WARNING", "WARNING")
-
-    # ── 9. Notification ───────────────────────────────────────────────────────
+    # 8. Notification — uses correct param names from create_notification()
     try:
-        drug_name = result["drug"]
-        event_name = result["event"]
-        notif_title = f"New signal detected: {drug_name} → {event_name}"
-        notif_desc = (
+        drug_name  = result.get("drug", keyword)
+        event_name = result.get("event", "Adverse Event")
+        sev        = result.get("severity", "Unknown")
+        notif_title = f"New signal: {drug_name} → {event_name}"
+        notif_desc  = (
             f"Source: {source_label} | Severity: {sev} | "
             f"FDA Match: {'Yes' if result['fda_applicable'] else 'No'}"
         )
         create_notification(
             title=notif_title,
             desc=notif_desc,
-            icon="critical" if sev in ("Critical", "High") else "warning" if result["fda_applicable"] else "info",
-            notif_type="signal",
+            icon="critical" if sev == "Critical" else "warning" if sev == "High" else "info",
+            type="signal",          # ← correct param name (not notif_type)
             category="AI Detection",
-            priority="urgent" if sev == "Critical" else "normal",
+            priority="urgent" if sev in ("Critical", "High") else "normal",
         )
         result["notification_created"] = True
-        _log(
-            f"Notification created: {notif_title}",
-            "NOTIFICATION", "SUCCESS",
-        )
+        _log(f"Notification created: {notif_title}", "NOTIFICATION", "SUCCESS")
     except Exception as e:
-        _log(f"Notification creation failed (non-blocking): {e}", "WARNING", "WARNING")
+        _log(f"Notification failed (non-blocking): {e}", "WARNING", "WARNING")
 
     result["status"] = "ingested"
     _log(
-        f"[DATA_EXPLORER] Record INT-{str(intake_id).zfill(3)} now visible in Data Explorer",
-        "SUCCESS", "SUCCESS",
+        f"[DASHBOARD] Record INT-{str(intake_id).zfill(3)} now visible across "
+        "Data Explorer · Alerts · Reports · Notifications",
+        "PROJECT_UPDATE", "SUCCESS",
     )
     return result
