@@ -337,8 +337,77 @@ export default function Dashboard({ currentUser }) {
                 </div>
               </div>
             )}
+
+            {/* ── FDA Evidence Card ────────────────────────────────── */}
+            {(() => {
+              const fda = aiResult?.fdaAnalysis
+              if (!fda) return null
+
+              if (!fda.available) {
+                return (
+                  <div style={{ padding: '10px 14px', marginTop: 12, borderTop: '1px solid #E2E8F0',
+                    background: 'rgba(148,163,184,0.06)', borderRadius: 8,
+                    border: '1px solid rgba(148,163,184,0.2)', fontSize: 12, color: 'var(--muted)' }}>
+                    ⚠️ <strong>FDA Evidence:</strong> openFDA data could not be retrieved. Normal AI analysis is unaffected.
+                  </div>
+                )
+              }
+
+              if (!fda.applicable) {
+                return (
+                  <div style={{ padding: '10px 14px', marginTop: 12, borderTop: '1px solid #E2E8F0',
+                    background: 'rgba(16,185,129,0.04)', borderRadius: 8,
+                    border: '1px solid rgba(16,185,129,0.15)', fontSize: 12 }}>
+                    <span style={{ color: '#10B981', fontWeight: 700 }}>ℹ️ FDA Evidence:</span>{' '}
+                    <span style={{ color: 'var(--text2)' }}>{fda.summary || 'Not applicable for this case.'}</span>
+                  </div>
+                )
+              }
+
+              // FDA Match Found
+              const riskColor = fda.riskLevel === 'high' ? '#EF4444' : fda.riskLevel === 'moderate' ? '#F59E0B' : '#10B981'
+              return (
+                <div style={{ padding: '14px 16px', marginTop: 12, borderTop: '1px solid #E2E8F0',
+                  background: 'rgba(239,68,68,0.04)', borderRadius: 8,
+                  border: '1px solid rgba(239,68,68,0.2)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 14 }}>🏛️</span>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: '#EF4444' }}>FDA-Supported Adverse Event Signal</span>
+                    <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 99, fontWeight: 700,
+                      background: `${riskColor}18`, color: riskColor, border: `1px solid ${riskColor}40` }}>
+                      {(fda.riskLevel || 'unknown').toUpperCase()} RISK
+                    </span>
+                    {fda.confidenceBoost > 0 && (
+                      <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 99, fontWeight: 700,
+                        background: 'rgba(59,130,246,0.1)', color: '#3B82F6', border: '1px solid rgba(59,130,246,0.25)' }}>
+                        +{fda.confidenceBoost}% Confidence Boost
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 20px', fontSize: 12, marginBottom: 8 }}>
+                    <div><span style={{ color: 'var(--muted)', fontWeight: 700 }}>Drug: </span>
+                      {fda.drug}{fda.normalizedDrug !== fda.drug && fda.normalizedDrug
+                        ? <span style={{ color: 'var(--muted)' }}> → {fda.normalizedDrug}</span> : ''}</div>
+                    <div><span style={{ color: 'var(--muted)', fontWeight: 700 }}>Source: </span>{fda.evidenceSource || 'openFDA'}</div>
+                    <div><span style={{ color: 'var(--muted)', fontWeight: 700 }}>Matched: </span>
+                      <span style={{ color: '#EF4444', fontWeight: 600 }}>{(fda.matchedSymptoms || []).join(', ') || '—'}</span></div>
+                    <div><span style={{ color: 'var(--muted)', fontWeight: 700 }}>APIs: </span>{(fda.sourceApis || []).join(', ') || '—'}</div>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text2)', padding: '8px 12px',
+                    background: 'rgba(239,68,68,0.04)', borderRadius: 6, lineHeight: 1.5 }}>
+                    {fda.summary}
+                  </div>
+                  {fda.cacheHit && (
+                    <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6 }}>
+                      ⚡ From cache · Last checked: {fda.lastCheckedAt ? new Date(fda.lastCheckedAt).toLocaleTimeString() : '—'}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
             <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #E2E8F0', fontSize: 12, color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span><strong>System:</strong> PII Vault ✅ | WHO-UMC Engine ✅ | Vector Store ✅</span>
+              <span><strong>System:</strong> PII Vault ✅ | WHO-UMC Engine ✅ | Vector Store ✅{aiResult?.fdaAnalysis?.available ? ' | openFDA ✅' : ''}</span>
               <div style={{ display: 'flex', gap: 8 }}>
                 <span><strong>Attempts:</strong> {aiResult.extraction_attempts || 1}</span>
                 <button className="btn btn-secondary btn-sm" onClick={handleExportE2B} disabled={exportingE2B}

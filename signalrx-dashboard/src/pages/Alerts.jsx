@@ -13,6 +13,9 @@ import {
 import { API_BASE } from '../config';
 import { useDataRefresh } from '../utils/dataEvents'
 import useAyuStore from '../store/useAyuStore'
+import FDAEvidenceModal from '../components/FDAEvidenceModal'
+import FDAModalPortal from '../components/FDAModalPortal'
+import { getFDAStatus, getFDALabel, getFDABadgeStyle, FDA_STATUS } from '../utils/fdaStatus'
 
 const sevColors = { Critical: 'danger', High: 'warning', Medium: 'info', Low: 'neutral' }
 
@@ -263,7 +266,84 @@ function TraceabilityDrawer({ signal, onClose }) {
             </div>
           )}
 
-          {/* ── Section 5: WHO-UMC Factors ──────────────────── */}
+          {/* ── Section 5: FDA Evidence ─────────────────────────── */}
+          {(() => {
+            const fda = signal?.fdaAnalysis
+            const fdaStatus = getFDAStatus(fda)
+            if (!fda) return null
+            const riskCol = fda.riskLevel === 'high' ? '#EF4444'
+              : fda.riskLevel === 'moderate' ? '#F59E0B' : '#10B981'
+            return (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                  <MdScience size={16} style={{ color: '#EF4444' }} />
+                  <span style={{
+                    fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
+                    letterSpacing: '.05em'
+                  }}>FDA Evidence (openFDA)</span>
+                  {fdaStatus === FDA_STATUS.MATCH_FOUND && (
+                    <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 7px', borderRadius: 99,
+                      background: 'rgba(239,68,68,.12)', color: '#EF4444', border: '1px solid rgba(239,68,68,.3)' }}>
+                      MATCH FOUND
+                    </span>
+                  )}
+                  {fdaStatus === FDA_STATUS.INSUFFICIENT_DATA && (
+                    <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 7px', borderRadius: 99,
+                      background: 'rgba(148,163,184,.12)', color: '#94A3B8', border: '1px solid rgba(148,163,184,.3)' }}>
+                      INSUFFICIENT DATA
+                    </span>
+                  )}
+                </div>
+                {fdaStatus === FDA_STATUS.INSUFFICIENT_DATA ? (
+                  <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 12px',
+                    background: 'rgba(148,163,184,.06)', borderRadius: 6, border: '1px solid rgba(148,163,184,.2)' }}>
+                    FDA analysis could not run — no valid drug was detected in this record.
+                  </div>
+                ) : !fda.available ? (
+                  <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 12px',
+                    background: 'rgba(148,163,184,.06)', borderRadius: 6, border: '1px solid rgba(148,163,184,.2)' }}>
+                    FDA data unavailable. AI analysis was not affected.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div style={{ fontSize: 12, color: 'var(--text2)', padding: '8px 12px',
+                      background: fdaStatus === FDA_STATUS.MATCH_FOUND ? 'rgba(239,68,68,.05)' : 'rgba(16,185,129,.04)',
+                      borderRadius: 6, lineHeight: 1.5,
+                      border: `1px solid ${fdaStatus === FDA_STATUS.MATCH_FOUND ? 'rgba(239,68,68,.2)' : 'rgba(16,185,129,.15)'}` }}>
+                      {fda.summary || '—'}
+                    </div>
+                    {fdaStatus === FDA_STATUS.MATCH_FOUND && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 99, fontWeight: 700,
+                          background: `${riskCol}18`, color: riskCol, border: `1px solid ${riskCol}40` }}>
+                          {(fda.riskLevel || 'unknown').toUpperCase()} RISK
+                        </span>
+                        {fda.confidenceBoost > 0 && (
+                          <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 99, fontWeight: 700,
+                            background: 'rgba(59,130,246,0.1)', color: '#3B82F6', border: '1px solid rgba(59,130,246,0.25)' }}>
+                            +{fda.confidenceBoost}% Confidence Boost
+                          </span>
+                        )}
+                        {(fda.matchedSymptoms || []).map(sym => (
+                          <span key={sym} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 99,
+                            background: 'rgba(239,68,68,.08)', color: '#EF4444',
+                            border: '1px solid rgba(239,68,68,.2)', fontWeight: 600 }}>
+                            {sym}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ fontSize: 10, color: 'var(--muted)' }}>
+                      Source: {fda.evidenceSource || 'openFDA'} · APIs: {(fda.sourceApis || []).join(', ') || '—'}
+                      {fda.cacheHit && ' · ⚡ Cached'}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+
+          {/* ── Section 6: WHO-UMC Factors ──────────────────── */}
           {factors.length > 0 && (
             <div style={{ marginBottom: 20 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
@@ -332,6 +412,30 @@ export default function Alerts({ openModal }) {
   const vaultLoading        = useAyuStore(s => s.vaultLoading)
   const refreshIntelligence = useAyuStore(s => s.refreshIntelligence)
   const loading = vaultLoading && liveSignals.length === 0
+
+  // ── FDA Modal state ──────────────────────────────────────────
+  const [fdaModal,   setFdaModal]   = useState(null)  // { signal, fda }
+  const [fdaLoading, setFdaLoading] = useState(null)  // signal.id being fetched
+  const [fdaResults, setFdaResults] = useState({})    // { [id]: fdaAnalysis }
+
+  // ── FDA Modal open handler ───────────────────────────────────
+  const handleOpenFdaModal = useCallback(async (signal) => {
+    const existing = fdaResults[signal.id] || signal.fdaAnalysis
+    if (existing) { setFdaModal({ signal, fda: existing }); return }
+    setFdaLoading(signal.id)
+    try {
+      const res  = await fetch(`${API_BASE}/api/fda/analyze-record/${signal.id}`, { method: 'POST' })
+      const data = await res.json()
+      const fda  = data.fdaAnalysis || null
+      setFdaResults(prev => ({ ...prev, [signal.id]: fda }))
+      setFdaModal({ signal, fda })
+    } catch { setFdaModal({ signal, fda: null }) }
+    finally { setFdaLoading(null) }
+  }, [fdaResults])
+
+  const handleFdaRefresh = useCallback((id, newFda) => {
+    setFdaResults(prev => ({ ...prev, [id]: newFda }))
+  }, [])
 
   /* -- Fetch trend timeline (local — no global equivalent) -- */
   const fetchTrends = useCallback(async () => {
@@ -517,6 +621,7 @@ export default function Alerts({ openModal }) {
                   <th>Causality</th>
                   <th>Confidence</th>
                   <th>Severity</th>
+                  <th>FDA Signal</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -529,6 +634,40 @@ export default function Alerts({ openModal }) {
                     <td><span className={`badge badge-${sevColors[s.severity] || 'neutral'}`}>{s.causality}</span></td>
                     <td><ConfidencePill value={s.confidence} /></td>
                     <td><span className={`badge badge-${sevColors[s.severity] || 'neutral'}`}>{s.severity}</span></td>
+                    {/* ── FDA Signal cell — canonical getFDAStatus ── */}
+                    <td>
+                      {(() => {
+                        const effectiveFda = fdaResults[s.id] || s.fdaAnalysis
+                        const isLoadingThis = fdaLoading === s.id
+
+                        if (isLoadingThis) {
+                          return (
+                            <span style={{ fontSize: 10, color: 'var(--blue)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                              <MdScience size={11} className="spin" /> Checking…
+                            </span>
+                          )
+                        }
+
+                        const status = getFDAStatus(effectiveFda)
+                        const label  = getFDALabel(status)
+                        const { bg, color, border } = getFDABadgeStyle(status)
+
+                        return (
+                          <button
+                            onClick={() => handleOpenFdaModal(s)}
+                            title={effectiveFda ? 'View FDA evidence' : 'Click to run FDA analysis'}
+                            style={{
+                              display: 'inline-flex', alignItems: 'center', gap: 3,
+                              fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99,
+                              background: bg, color, border: `1px solid ${border}`,
+                              cursor: 'pointer', whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <MdScience size={10} /> {label}
+                          </button>
+                        )
+                      })()}
+                    </td>
                     <td>
                       <div style={{ display: 'flex', gap: 4 }}>
                         <button className="btn btn-secondary btn-sm"
@@ -555,6 +694,68 @@ export default function Alerts({ openModal }) {
       {/* ── Traceability Drawer ──────────────────────────────── */}
       {drawerSignal && (
         <TraceabilityDrawer signal={drawerSignal} onClose={() => setDrawerSignal(null)} />
+      )}
+
+      {/* ── FDA EVIDENCE MODAL — portal to escape .fade-in stacking context ── */}
+      {fdaModal && (
+        <FDAModalPortal>
+          <div
+            style={{
+              position: 'fixed', inset: 0, zIndex: 99999,
+              background: 'rgba(0,0,0,0.6)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: 24,
+            }}
+            onClick={e => { if (e.target === e.currentTarget) setFdaModal(null) }}
+          >
+            <div style={{
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: 14, width: '100%', maxWidth: 560,
+              maxHeight: '88vh', overflowY: 'auto',
+              boxShadow: '0 24px 60px rgba(0,0,0,0.4)',
+              position: 'relative',
+            }}>
+              {/* Sticky header */}
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '16px 20px', borderBottom: '1px solid var(--border)',
+                position: 'sticky', top: 0,
+                background: 'var(--surface)', zIndex: 1,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <MdScience size={18} style={{ color: '#EF4444' }} />
+                  <span style={{ fontWeight: 700, fontSize: 15 }}>FDA Evidence</span>
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                    SIG-{String(fdaModal.signal.id).padStart(3, '0')}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setFdaModal(null)}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: 'var(--muted)', display: 'flex', padding: 4,
+                    borderRadius: 6, transition: 'color .15s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = '#EF4444'}
+                  onMouseLeave={e => e.currentTarget.style.color = 'var(--muted)'}
+                >
+                  <MdClose size={20} />
+                </button>
+              </div>
+              <div style={{ padding: '20px' }}>
+                <FDAEvidenceModal
+                  fda={fdaModal.fda}
+                  recordId={fdaModal.signal.id}
+                  recordType="intelligence"
+                  drug={fdaModal.signal.drug}
+                  event={fdaModal.signal.event}
+                  onClose={() => setFdaModal(null)}
+                  onRefresh={handleFdaRefresh}
+                />
+              </div>
+            </div>
+          </div>
+        </FDAModalPortal>
       )}
     </>
   )

@@ -8,6 +8,9 @@ import { MdRefresh, MdSearch, MdClose, MdScience, MdDataset } from 'react-icons/
 import { API_BASE } from '../config';
 import { useDataRefresh } from '../utils/dataEvents'
 import useAyuStore from '../store/useAyuStore'
+import FDAEvidenceModal from '../components/FDAEvidenceModal'
+import FDAModalPortal from '../components/FDAModalPortal'
+import { getFDAStatus, getFDALabel, getFDABadgeStyle, FDA_STATUS } from '../utils/fdaStatus'
 
 
 // ============================================================
@@ -79,7 +82,7 @@ const ALL_EMOTIONS = [
 ]
 
 export default function DataExplorer() {
-  // ── UI state only (data lives in Zustand store) ────────────
+  // ── UI state only (data lives in Zustand store) ───────────────────────
   const [keyword, setKeyword]         = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [isScouting, setIsScouting]   = useState(false)
@@ -87,11 +90,43 @@ export default function DataExplorer() {
   const [sourceFilter, setSourceFilter] = useState('All')
   const [sentFilter, setSentFilter]     = useState('All')
 
-  // ── Zustand store subscriptions ────────────────────────────
+  // ── FDA Modal state ─────────────────────────────────────────
+  const [fdaModal,   setFdaModal]   = useState(null)   // { record, fda }
+  const [fdaLoading, setFdaLoading] = useState(null)   // record.id being fetched
+  // Local overrides for freshly fetched FDA results (by intake id)
+  const [fdaResults, setFdaResults] = useState({})     // { [id]: fdaAnalysis }
+
+  // ── Zustand store subscriptions ─────────────────────────────
   const intakeRecords  = useAyuStore(s => s.intakeRecords)
   const vaultLoading   = useAyuStore(s => s.vaultLoading)
   const refreshIntake  = useAyuStore(s => s.refreshIntake)
-  const loading = vaultLoading && intakeRecords.length === 0  // Only show spinner on first load
+  const loading = vaultLoading && intakeRecords.length === 0
+
+  // ── FDA modal open handler ──────────────────────────────────
+  const handleOpenFdaModal = useCallback(async (record) => {
+    const existing = fdaResults[record.id] || record.fdaAnalysis
+    if (existing) {
+      setFdaModal({ record, fda: existing })
+      return
+    }
+    // Fetch on demand — triggers /api/fda/analyze-intake/{id}
+    setFdaLoading(record.id)
+    try {
+      const res  = await fetch(`${API_BASE}/api/fda/analyze-intake/${record.id}`, { method: 'POST' })
+      const data = await res.json()
+      const fda  = data.fdaAnalysis || null
+      setFdaResults(prev => ({ ...prev, [record.id]: fda }))
+      setFdaModal({ record, fda })
+    } catch (err) {
+      setFdaModal({ record, fda: null })
+    } finally {
+      setFdaLoading(null)
+    }
+  }, [fdaResults])
+
+  const handleFdaRefresh = useCallback((id, newFda) => {
+    setFdaResults(prev => ({ ...prev, [id]: newFda }))
+  }, [])
 
   // ── Initial load + auto-refresh ───────────────────────────
   useEffect(() => {
@@ -150,12 +185,14 @@ export default function DataExplorer() {
   // ── Filtering logic ────────────────────────────────────────
   const filteredRecords = useMemo(() => {
     let list = intakeRecords
-    // Drug search filter
+    // Drug search filter — also matches normalized FDA drug and matched symptoms
     if (searchInput.trim()) {
       const q = searchInput.trim().toLowerCase()
       list = list.filter(r =>
         (r.drug_keyword || '').toLowerCase().includes(q) ||
-        (r.content || '').toLowerCase().includes(q)
+        (r.content || '').toLowerCase().includes(q) ||
+        (r.fdaAnalysis?.normalizedDrug || '').toLowerCase().includes(q) ||
+        (r.fdaAnalysis?.matchedSymptoms || []).some(s => s.toLowerCase().includes(q))
       )
     }
     // Source filter
@@ -448,6 +485,8 @@ export default function DataExplorer() {
                   <th>Drug / Event</th>
                   <th>Sentiment</th>
                   <th>Emotion</th>
+                  <th>FDA Match</th>
+                  <th>Risk</th>
                   <th>Status</th>
                   <th>Date</th>
                 </tr>
@@ -484,7 +523,7 @@ export default function DataExplorer() {
                   return (
                     <tr key={p.id}>
                       <td><strong>INT-{String(p.id).padStart(3, '0')}</strong></td>
-                      <td style={{ maxWidth: 300, lineHeight: 1.5 }}>
+                      <td style={{ maxWidth: 280, lineHeight: 1.5 }}>
                         <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
                           <span title={safeContent} style={{ fontSize:13 }}>{safeContent}</span>
                           {hasMasked && <PiiMaskedBadge />}
@@ -503,6 +542,65 @@ export default function DataExplorer() {
                           ? <span style={{ background: 'rgba(239,68,68,0.08)', color: '#EF4444', padding: '2px 8px', borderRadius: 99, fontWeight: 600 }}>{emotion}</span>
                           : <span style={{ color: 'var(--muted)' }}>—</span>}
                       </td>
+                      {/* ── FDA Match cell — canonical getFDAStatus ── */}
+                      <td>
+                        {(() => {
+                          const effectiveFda  = fdaResults[p.id] || p.fdaAnalysis
+                          const isLoadingThis = fdaLoading === p.id
+
+                          if (isLoadingThis) {
+                            return (
+                              <span style={{ fontSize: 10, color: 'var(--blue)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                <MdScience size={11} className="spin" /> Checking…
+                              </span>
+                            )
+                          }
+
+                          const status = getFDAStatus(effectiveFda)
+                          const label  = getFDALabel(status)
+                          const { bg, color, border } = getFDABadgeStyle(status)
+
+                          return (
+                            <button
+                              onClick={() => handleOpenFdaModal(p)}
+                              title={effectiveFda ? 'View FDA evidence' : 'Click to run FDA analysis'}
+                              style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 3,
+                                fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 99,
+                                background: bg, color, border: `1px solid ${border}`,
+                                cursor: 'pointer', whiteSpace: 'nowrap',
+                              }}
+                            >
+                              <MdScience size={10} /> {label}
+                            </button>
+                          )
+                        })()}
+                      </td>
+                      {/* ── FDA Risk cell — only shown for real matches ── */}
+                      <td>
+                        {(() => {
+                          const effectiveFda = fdaResults[p.id] || p.fdaAnalysis
+                          const status = getFDAStatus(effectiveFda)
+                          // Never show a risk pill for insufficient_data or non-matches
+                          if (status !== FDA_STATUS.MATCH_FOUND || !effectiveFda?.riskLevel) {
+                            return <span style={{ fontSize: 10, color: 'var(--muted)' }}>—</span>
+                          }
+                          const rc = effectiveFda.riskLevel === 'high' ? '#EF4444'
+                            : effectiveFda.riskLevel === 'moderate' ? '#F59E0B' : '#10B981'
+                          return (
+                            <span
+                              onClick={() => handleOpenFdaModal(p)}
+                              style={{
+                                fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 99,
+                                background: `${rc}18`, color: rc, border: `1px solid ${rc}40`,
+                                cursor: 'pointer', display: 'inline-block',
+                              }}
+                            >
+                              {effectiveFda.riskLevel.toUpperCase()}
+                            </span>
+                          )
+                        })()}
+                      </td>
                       <td>
                         <span className={`badge badge-${statusBadge}`}>
                           {statusLabel === 'Analyzed' ? '✓ Analyzed' : statusLabel === 'Failed' ? '✕ Failed' : '⏳ Pending'}
@@ -519,6 +617,69 @@ export default function DataExplorer() {
           )}
         </div>
       </div>
+
+      {/* ── FDA EVIDENCE MODAL — rendered via portal to escape stacking context ── */}
+      {fdaModal && (
+        <FDAModalPortal>
+          <div
+            style={{
+              position: 'fixed', inset: 0, zIndex: 99999,
+              background: 'rgba(0,0,0,0.6)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: 24,
+            }}
+            onClick={e => { if (e.target === e.currentTarget) setFdaModal(null) }}
+          >
+            <div style={{
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: 14, width: '100%', maxWidth: 560,
+              maxHeight: '88vh', overflowY: 'auto',
+              boxShadow: '0 24px 60px rgba(0,0,0,0.4)',
+              position: 'relative',
+            }}>
+              {/* Header */}
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '16px 20px', borderBottom: '1px solid var(--border)',
+                position: 'sticky', top: 0,
+                background: 'var(--surface)', zIndex: 1,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <MdScience size={18} style={{ color: '#EF4444' }} />
+                  <span style={{ fontWeight: 700, fontSize: 15 }}>FDA Evidence</span>
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                    INT-{String(fdaModal.record.id).padStart(3, '0')}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setFdaModal(null)}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: 'var(--muted)', display: 'flex', padding: 4,
+                    borderRadius: 6, transition: 'color .15s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = '#EF4444'}
+                  onMouseLeave={e => e.currentTarget.style.color = 'var(--muted)'}
+                >
+                  <MdClose size={20} />
+                </button>
+              </div>
+              {/* Body */}
+              <div style={{ padding: '20px' }}>
+                <FDAEvidenceModal
+                  fda={fdaModal.fda}
+                  recordId={fdaModal.record.id}
+                  recordType="intake"
+                  drug={fdaModal.record.drug || fdaModal.record.drug_keyword}
+                  event={fdaModal.record.event}
+                  onClose={() => setFdaModal(null)}
+                  onRefresh={handleFdaRefresh}
+                />
+              </div>
+            </div>
+          </div>
+        </FDAModalPortal>
+      )}
     </>
   )
 }

@@ -53,6 +53,10 @@ from routes.user_routes import router as user_router
 from routes.notification_routes import router as notification_router
 from routes.alert_routes import router as alert_router
 from routes.auth_routes import router as auth_ext_router
+from routes.fda_routes import router as fda_router
+
+# ── FDA Service ──────────────────────────────────────────────
+from services.fda_service import analyze_fda, analyze_fda_structured
 
 
 app = FastAPI(
@@ -78,6 +82,7 @@ app.include_router(user_router)
 app.include_router(notification_router)
 app.include_router(alert_router)
 app.include_router(auth_ext_router)
+app.include_router(fda_router)
 
 
 # ============================================================
@@ -276,6 +281,38 @@ async def analyze_case(report: CaseReport):
     if intake_id:
         update_status(intake_id, "analyzed")
 
+    # ── Step 5b: FDA Analysis ──────────────────────────────────────
+    # Strategy A: use AI-extracted drug+event (structured, no relation detection)
+    # Strategy B: fall back to free-text analysis on masked_text
+    # Result is persisted to BOTH intake and intelligence records in DB.
+    fda_analysis = {"available": False, "applicable": False, "apiStatus": "skipped"}
+    try:
+        _drug_hint   = (extracted_json.get("suspect_drug") or "") if isinstance(extracted_json, dict) else ""
+        _event_hint  = (
+            extracted_json.get("meddra_term")
+            or extracted_json.get("adverse_event")
+            or ""
+        ) if isinstance(extracted_json, dict) else ""
+
+        if _drug_hint and _event_hint:
+            # Structured path — bypasses relation detection
+            fda_analysis = analyze_fda_structured(
+                drug=_drug_hint,
+                event=_event_hint,
+                record_id=intelligence_id,
+                record_type="intelligence",
+            )
+        else:
+            # Free-text path — uses relation detection
+            fda_analysis = analyze_fda(text=masked_text, drug_hint=_drug_hint or None)
+
+        print(f"   [FDA] applicable={fda_analysis.get('applicable')}, "
+              f"drug={fda_analysis.get('normalizedDrug')}, "
+              f"matched={fda_analysis.get('matchedSymptoms')}, "
+              f"cacheHit={fda_analysis.get('cacheHit')}")
+    except Exception as fda_err:
+        print(f"   [FDA] Analysis failed (non-blocking): {fda_err}")
+
     # -- Step 6: Create DB-backed notification --
     sev = doctor_verdict.get("severity", "Unknown")
     drug_name = (extracted_json.get("suspect_drug") or "Unknown Drug") if isinstance(extracted_json, dict) else "Unknown Drug"
@@ -293,6 +330,19 @@ async def analyze_case(report: CaseReport):
             print(f"[NOTIFICATION] Created protected signal notification: id={notif.get('id')}")
     except Exception as e:
         print(f"   [NOTIFY] Notification skipped: {e}")
+
+    # -- Step 6b: FDA-supported notification (only when applicable) --
+    if fda_analysis.get("applicable") and fda_analysis.get("matchedSymptoms"):
+        try:
+            fda_drug_norm = fda_analysis.get("normalizedDrug", drug_name)
+            fda_syms = ", ".join(fda_analysis.get("matchedSymptoms", []))
+            create_notification(
+                title=f"FDA evidence found: {fda_syms} linked to {fda_drug_norm}",
+                desc=f"openFDA adverse event match confirmed. Risk: {fda_analysis.get('riskLevel','unknown')} | Confidence boost: +{fda_analysis.get('confidenceBoost', 0)}%",
+                icon="warning", type="signal", category="FDA", priority="high"
+            )
+        except Exception as fda_notif_err:
+            print(f"   [FDA-NOTIFY] Skipped: {fda_notif_err}")
 
     # ── Step 7: Sanitize & build response ─────────────────────
     reasoning_safe   = _sanitize(doctor_verdict.get("reasoning", ""))
@@ -324,6 +374,8 @@ async def analyze_case(report: CaseReport):
         "alternative_cause_likely": doctor_verdict.get("alternative_cause_likely", False),
         "ddi_risk_level": doctor_verdict.get("ddi_risk_level", "None"),
         "interaction_reasoning": interaction_safe,
+        # ── FDA Evidence (never exposes raw PII) ──
+        "fdaAnalysis": fda_analysis,
     }
 
     print(f"[ANALYZE-CASE] Done: intake_id={intake_id}, intel_id={intelligence_id}, causality={response['causality']}")
@@ -465,14 +517,15 @@ async def process_vault():
 async def alerts_feed():
     """
     Get all intelligence vault records for the dashboard.
-    Returns enriched data with causality, confidence, severity.
+    Returns persisted fdaAnalysis from DB — NO live openFDA calls per record.
+    FDA analysis is written to DB by analyze-case and /api/fda/analyze-record.
     """
     try:
-        records = get_all_intelligence()
+        records = get_all_intelligence()   # already includes fdaAnalysis from DB
         return {
             "status": "success",
             "total": len(records),
-            "records": records
+            "records": records,
         }
     except Exception as e:
         return {
@@ -614,18 +667,19 @@ async def dashboard_stats():
 # ============================================================
 @app.get("/api/reports")
 async def get_reports():
-    """Get intelligence vault records formatted as reports, enriched with PII safety metadata."""
+    """Get intelligence vault records formatted as reports.
+    fdaAnalysis is read from persisted DB field — no live openFDA calls.
+    """
+    import re as _re
     try:
-        records = get_all_intelligence()
-        # Also get intake records to join pii_masked/pii_types
-        intake_map = {}
+        records = get_all_intelligence()   # includes fdaAnalysis from DB
+        # Join intake metadata for PII flags
+        intake_by_intel = {}
         try:
             intakes = get_all_intake()
-            intake_map = {r['id']: r for r in intakes if r.get('intelligence_id')}
-            # Re-key by intelligence_id
             intake_by_intel = {r['intelligence_id']: r for r in intakes if r.get('intelligence_id')}
         except Exception:
-            intake_by_intel = {}
+            pass
 
         reports = []
         for r in records:
@@ -633,13 +687,27 @@ async def get_reports():
             pii_masked = intake_meta.get('pii_masked', False)
             pii_types  = intake_meta.get('pii_types_detected', [])
 
-            # Derive emotion from reasoning prefix if stored
+            # Extract emotion from reasoning prefix
             reasoning_raw = r.get('reasoning', '') or ''
             emotion = ''
-            import re
-            m = re.match(r'^\[Emotion:\s*([^\]]+)\]', reasoning_raw)
+            m = _re.match(r'^\[Emotion:\s*([^\]]+)\]', reasoning_raw)
             if m:
                 emotion = m.group(1).strip()
+
+            # ── Use persisted FDA from DB (no live call) ──────────────
+            rpt_fda = r.get('fdaAnalysis')   # already parsed by get_all_intelligence()
+
+            # FDA label for table column
+            if rpt_fda and rpt_fda.get("applicable") and rpt_fda.get("matchedSymptoms"):
+                fda_label = "FDA Match Found"
+            elif rpt_fda and not rpt_fda.get("available"):
+                fda_label = "FDA Unavailable"
+            elif rpt_fda and rpt_fda.get("apiStatus") == "not_applicable":
+                fda_label = "Not Applicable"
+            elif rpt_fda is None:
+                fda_label = "Pending"
+            else:
+                fda_label = "No FDA Match"
 
             reports.append({
                 "id": f"RPT-{200 + r['id']}",
@@ -661,6 +729,8 @@ async def get_reports():
                 "pii_masked": pii_masked,
                 "pii_types_detected": pii_types,
                 "e2b_available": True,
+                "fdaAnalysis": rpt_fda,
+                "fdaLabel": fda_label,
             })
         return {"status": "success", "total": len(reports), "reports": reports}
     except Exception as e:
@@ -672,9 +742,12 @@ async def get_reports():
 # ============================================================
 @app.get("/api/intake-vault")
 async def intake_vault():
-    """Get all intake vault records for the Data Explorer."""
+    """Get all intake vault records for the Data Explorer.
+    fdaAnalysis is read from persisted DB field — no live openFDA calls.
+    Frontend can trigger /api/fda/analyze-intake/{id} to analyze missing records.
+    """
     try:
-        records = get_all_intake()
+        records = get_all_intake()   # already includes fdaAnalysis from DB
         return {"status": "success", "total": len(records), "records": records}
     except Exception as e:
         return {"status": "error", "message": str(e), "total": 0, "records": []}
@@ -1207,37 +1280,37 @@ if __name__ == "__main__":
             if killed:
                 import time; time.sleep(1)   # give OS time to release the socket
                 if not _port_in_use(port):
-                    print(f"   [PORT-MGR] ✅ Port {port} freed successfully")
+                    print(f"   [PORT-MGR] [OK] Port {port} freed successfully")
                     return port
-            print(f"   [PORT-MGR] ⚠️  Port {port} still busy — trying next …")
+            print(f"   [PORT-MGR] [WARN]  Port {port} still busy — trying next …")
         raise RuntimeError(
             f"All candidate ports are occupied: {candidates}\n"
             "  → Close any running Python/uvicorn processes and retry."
         )
 
     # ── Resolve the port ─────────────────────────────────────────
-    print("\n" + "═" * 60)
+    print("\n" + "=" * 60)
     print("  AyuScout V2 — Port Manager")
-    print("═" * 60)
+    print("=" * 60)
     try:
         active_port = _find_free_port(_fallbacks)
     except RuntimeError as e:
-        print(f"\n❌ {e}")
+        print(f"\n[ERROR] {e}")
         sys.exit(1)
 
     if active_port != _preferred:
-        print(f"   [PORT-MGR] ⚠️  Preferred port {_preferred} busy → using {active_port}")
+        print(f"   [PORT-MGR] [WARN]  Preferred port {_preferred} busy -> using {active_port}")
         print(f"   [PORT-MGR]    Update BACKEND_PORT={active_port} in backend/.env to silence this.")
     else:
-        print(f"   [PORT-MGR] ✅  Port {active_port} is free")
+        print(f"   [PORT-MGR] [OK]  Port {active_port} is free")
 
     # ── Write active port so the frontend .env.local can be synced ──
     port_file = pathlib.Path(__file__).parent / ".active_port"
     port_file.write_text(str(active_port))
 
-    print(f"\n   ✅ Backend  → http://localhost:{active_port}")
-    print(f"   ✅ API Docs → http://localhost:{active_port}/docs")
-    print("═" * 60 + "\n")
+    print(f"\n   [OK] Backend  -> http://localhost:{active_port}")
+    print(f"   [OK] API Docs -> http://localhost:{active_port}/docs")
+    print("=" * 60 + "\n")
 
     # ── Launch uvicorn (reload=False prevents double-spawn on Windows) ──
     uvicorn.run(

@@ -36,6 +36,6 @@ lxml
 # --- Environment Management ---
 python-dotenv
 
-# --- Live Web Scraping (Phase 2 — Real Crawler) ---
+# --- Live Web Scraping (Phase 2 — Real Crawler) + FDA Service ---
 requests
 beautifulsoup4

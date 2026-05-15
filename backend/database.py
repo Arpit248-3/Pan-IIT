@@ -87,6 +87,7 @@ class IntakeVault(Base):
     drug_keyword = Column(String(100))
     status = Column(String(50), default="pending")
     pii_map = Column(Text, default="{}")  # JSON map of PII tokens -> originals
+    fda_analysis_json = Column(Text, nullable=True)  # Persisted FDA result object
 
 
 class IntelligenceVault(Base):
@@ -108,6 +109,7 @@ class IntelligenceVault(Base):
     who_umc_score = Column(Integer)
     who_umc_factors = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.now)
+    fda_analysis_json = Column(Text, nullable=True)  # Persisted FDA result object
 
 
 class User(Base):
@@ -278,6 +280,9 @@ def init_db():
         "ALTER TABLE users ADD COLUMN department VARCHAR(100) DEFAULT 'Pharmacovigilance'",
         "ALTER TABLE users ADD COLUMN status VARCHAR(50) DEFAULT 'Active'",
         "ALTER TABLE users ADD COLUMN deleted_at DATETIME",
+        # ── FDA persistence columns (safe to run on existing DBs) ──
+        "ALTER TABLE intake_vault ADD COLUMN fda_analysis_json TEXT",
+        "ALTER TABLE intelligence_vault ADD COLUMN fda_analysis_json TEXT",
     ]
     with engine.connect() as conn:
         for sql in _safe_migrations:
@@ -646,7 +651,9 @@ def save_intelligence(intake_id, result):
 # ============================================================
 
 def get_all_intelligence():
-    """Get all intelligence records for the dashboard. Reasoning is sanitized."""
+    """Get all intelligence records for the dashboard. Reasoning is sanitized.
+    Returns persisted fdaAnalysis from DB when available.
+    """
     session = SessionLocal()
     try:
         records = session.query(IntelligenceVault).order_by(
@@ -669,7 +676,9 @@ def get_all_intelligence():
                 "time_to_onset": r.time_to_onset,
                 "who_umc_score": r.who_umc_score,
                 "who_umc_factors": r.who_umc_factors,
-                "created_at": r.created_at.isoformat() if r.created_at else None
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                # ── Persisted FDA analysis (None when not yet run) ──
+                "fdaAnalysis": _parse_fda_json(r.fda_analysis_json),
             }
             for r in records
         ]
@@ -699,8 +708,67 @@ def get_intelligence_by_id(record_id: int):
             "time_to_onset": r.time_to_onset,
             "who_umc_score": r.who_umc_score,
             "who_umc_factors": r.who_umc_factors,
-            "created_at": r.created_at.isoformat() if r.created_at else None
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "fdaAnalysis": _parse_fda_json(r.fda_analysis_json),
         }
+    finally:
+        session.close()
+
+
+# ── FDA JSON helpers (internal) ────────────────────────────────────────────────
+
+def _parse_fda_json(raw: str | None) -> dict | None:
+    """Safely parse a stored fda_analysis_json string. Returns None if missing/invalid."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def update_fda_analysis_for_intelligence(intel_id: int, fda_dict: dict) -> bool:
+    """
+    Persist FDA analysis result to an IntelligenceVault record.
+    Returns True on success.
+    """
+    session = SessionLocal()
+    try:
+        r = session.query(IntelligenceVault).filter(IntelligenceVault.id == intel_id).first()
+        if not r:
+            return False
+        r.fda_analysis_json = json.dumps(fda_dict)
+        session.commit()
+        print(f"   [FDA-DB] Intelligence {intel_id}: FDA analysis persisted "
+              f"(applicable={fda_dict.get('applicable')}, risk={fda_dict.get('riskLevel')})")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"   [FDA-DB-ERROR] Failed to persist FDA for intelligence {intel_id}: {e}")
+        return False
+    finally:
+        session.close()
+
+
+def update_fda_analysis_for_intake(intake_id: int, fda_dict: dict) -> bool:
+    """
+    Persist FDA analysis result to an IntakeVault record.
+    Returns True on success.
+    """
+    session = SessionLocal()
+    try:
+        r = session.query(IntakeVault).filter(IntakeVault.id == intake_id).first()
+        if not r:
+            return False
+        r.fda_analysis_json = json.dumps(fda_dict)
+        session.commit()
+        print(f"   [FDA-DB] Intake {intake_id}: FDA analysis persisted "
+              f"(applicable={fda_dict.get('applicable')})")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"   [FDA-DB-ERROR] Failed to persist FDA for intake {intake_id}: {e}")
+        return False
     finally:
         session.close()
 
@@ -814,7 +882,8 @@ def get_dashboard_stats():
 def get_all_intake():
     """Get all intake vault records for the Data Explorer.
     Returns PII-safe data only: pii_map is NEVER returned.
-    Includes pii_masked flag, detected token types, and joined intelligence metadata.
+    Includes pii_masked flag, detected token types, joined intelligence metadata,
+    and persisted fdaAnalysis from DB.
     """
     session = SessionLocal()
     try:
@@ -858,6 +927,11 @@ def get_all_intake():
                 "pii_masked": pii_masked,
                 "pii_types_detected": pii_types,
                 # pii_map is intentionally NEVER returned
+                # ── Persisted FDA analysis: intake record's own FDA result first,
+                #    then fall back to linked intelligence record's FDA result.
+                "fdaAnalysis": _parse_fda_json(r.fda_analysis_json)
+                    or (intel and _parse_fda_json(intel.fda_analysis_json))
+                    or None,
             })
         return result
     finally:

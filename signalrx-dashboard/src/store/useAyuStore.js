@@ -16,6 +16,7 @@
  */
 import { create } from 'zustand'
 import { API_BASE } from '../config'
+import { getFDAReportLabel } from '../utils/fdaStatus'
 
 // ── Canonical schema normalizer ──────────────────────────────────────────────
 // Ensures every piece of data coming from the backend is normalized into
@@ -40,6 +41,8 @@ export function normalizeIntelligenceRecord(r) {
     intake_id:       r.intake_id || null,
     created_at:      r.created_at || null,
     e2b_available:   r.e2b_available || false,
+    // ── FDA Evidence (null-safe) ──────────────────────────────
+    fdaAnalysis:     r.fdaAnalysis || null,
   }
 }
 
@@ -61,6 +64,8 @@ export function normalizeIntakeRecord(r) {
     intelligence_id:     r.intelligence_id || null,
     e2b_available:       r.e2b_available || false,
     created_at:          r.created_at || null,
+    // ── FDA Evidence (null-safe) ──────────────────────────────
+    fdaAnalysis:         r.fdaAnalysis || null,
   }
 }
 
@@ -100,6 +105,11 @@ export function normalizeReport(r) {
     author:      r.author || 'AyuScout V2 AI',
     e2b_available: r.e2b_available || false,
     created_at:  r.created_at || null,
+    // ── FDA Evidence ─────────────────────────────────────────────
+    fdaAnalysis: r.fdaAnalysis || null,   // full FDA result object (or null)
+    // fdaLabel is ALWAYS derived from fdaAnalysis using canonical logic.
+    // Never use the raw backend fdaLabel directly — it may be stale or wrong.
+    fdaLabel:    getFDAReportLabel(r.fdaAnalysis || null),
   }
 }
 
