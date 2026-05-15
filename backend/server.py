@@ -7,9 +7,11 @@ try:
 except ImportError:
     pass
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
+from fastapi.responses import Response, StreamingResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
+from typing import Optional, Any, Union
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import os
@@ -95,6 +97,19 @@ app.include_router(fda_router)
 app.include_router(crawler_router)
 
 
+# Global 422 handler — logs exact field errors to console for debugging
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    print(f"\n[422-DEBUG] Validation error on {request.method} {request.url.path}")
+    for e in errors:
+        print(f"  Field: {'.'.join(str(x) for x in e.get('loc', []))} | Error: {e.get('msg')} | Input: {e.get('input')}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": errors, "hint": "Check field types — common issue: owner_id must be int or null"},
+    )
+
+
 # ============================================================
 # ROOT HOME PAGE (System Status)
 # ============================================================
@@ -157,7 +172,7 @@ class LoginRequest(BaseModel):
 
 
 class HelpQueryRequest(BaseModel):
-    user_id: object   # Accept int OR str from localStorage (both valid)
+    user_id: Optional[Any] = None   # int OR str from localStorage
     user_email: str
     user_name: str = ''
     question: str
@@ -1044,10 +1059,10 @@ class ProjectCreateRequest(BaseModel):
     scraper_config: dict = {}
     agentic_enabled: bool = False
     schedule_interval: str = 'Daily'
-    owner_id: object = None    # Accept int OR str from localStorage
-    owner_email: str = None
+    owner_id: Optional[Any] = None    # int OR str from localStorage
+    owner_email: Optional[str] = None
     source_type: str = 'social'
-    source_url: str = None
+    source_url: Optional[str] = None
 
 
 @app.post("/api/projects")
@@ -1055,6 +1070,13 @@ async def create_project_endpoint(req: ProjectCreateRequest):
     """Persist a new monitoring project and return the saved record."""
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="Project name is required")
+    # Safely cast owner_id — localStorage can send int or string
+    safe_owner_id = None
+    if req.owner_id is not None:
+        try:
+            safe_owner_id = int(req.owner_id)
+        except (TypeError, ValueError):
+            safe_owner_id = None
     project = create_project(
         name=req.name.strip(),
         keywords=req.keywords,
@@ -1062,7 +1084,7 @@ async def create_project_endpoint(req: ProjectCreateRequest):
         scraper_config=req.scraper_config,
         agentic_enabled=req.agentic_enabled,
         schedule_interval=req.schedule_interval,
-        owner_id=req.owner_id,
+        owner_id=safe_owner_id,
         owner_email=req.owner_email,
         source_type=req.source_type or 'social',
         source_url=req.source_url,
