@@ -25,10 +25,10 @@ chromadb
 # sentence-transformers (Removed to save RAM - using Cloud Embeddings)
 
 
-# --- PII Masking (Regex-based, lightweight) ---
-# presidio-analyzer        # Uncomment for production-grade NER-based PII
-# presidio-anonymizer
-# spacy
+# --- PII Masking (Hybrid NLP) ---
+presidio-analyzer
+presidio-anonymizer
+spacy
 
 # --- E2B XML Export ---
 lxml

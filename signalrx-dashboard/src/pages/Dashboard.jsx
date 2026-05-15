@@ -4,6 +4,7 @@ import { MdArrowUpward, MdArrowDownward, MdOpenInNew, MdDownload, MdScience } fr
 import { API_BASE } from '../config';
 import { fireDataUpdated } from '../utils/dataEvents'
 import useAyuStore from '../store/useAyuStore'
+import { sanitizePII } from '../utils/sanitizePII'
 
 
 // Color helpers
@@ -28,6 +29,7 @@ export default function Dashboard({ currentUser }) {
   const [aiResult, setAiResult] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [exportingE2B, setExportingE2B] = useState(false)
+  const [piiWarning, setPiiWarning] = useState(null)  // shows which PII types were stripped
   // AbortController ref to cancel in-flight requests
   const abortRef = useRef(null)
 
@@ -48,15 +50,28 @@ export default function Dashboard({ currentUser }) {
     if (abortRef.current) abortRef.current.abort()
     abortRef.current = new AbortController()
 
+    // ── PRIVACY LAYER 1: Client-side PII sanitization ──────────────────────
+    // Raw input is NEVER sent to the backend or stored in any tab.
+    // sanitizePII() runs synchronously here, before any async operation.
+    const { sanitized: sanitizedText, hadPII, detectedTypes } = sanitizePII(inputText)
+    if (hadPII) {
+      setPiiWarning(`PII detected and masked: ${detectedTypes.join(', ')}`)
+      console.log('[PII] Client-side mask applied:', detectedTypes, '→', sanitizedText)
+    } else {
+      setPiiWarning(null)
+    }
+    // Raw inputText is discarded here — sanitizedText flows downstream
+
     setIsLoading(true)
     setAiResult(null)
     const requestTs = Date.now()
 
     try {
+      // ── Send SANITIZED text to backend (backend masks again as Layer 2) ──
       const response = await fetch(`${API_BASE}/api/analyze-case`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: inputText }),
+        body: JSON.stringify({ text: sanitizedText }),
         signal: abortRef.current.signal,
       })
       const data = await response.json()

@@ -228,7 +228,7 @@ async def analyze_case(report: CaseReport):
     # ── Step 1: Mask PII ─────────────────────────────────────
     _pii = _PIIVault()
     masked_text, _vault_map = _pii.mask(report.text, source="analyze-case")
-    pii_types = [k.split('_')[0].replace('[','') for k in _vault_map.keys()]
+    pii_types = list(set([k.split('_')[0].replace('[','').replace(']','') for k in _vault_map.keys()]))
     pii_detected = len(_vault_map) > 0
     pii_token_count = len(_vault_map)
     print(f"   [PII] Tokens masked: {list(_vault_map.keys())}")
