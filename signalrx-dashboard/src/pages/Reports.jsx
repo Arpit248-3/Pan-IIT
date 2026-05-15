@@ -5,6 +5,22 @@ import { API_BASE } from '../config';
 
 const sevColors = { Critical: 'danger', High: 'warning', Medium: 'info', Low: 'neutral' }
 
+// ── Frontend PII safety net for Reports (email/phone/Aadhaar/PAN only) ──
+// Per security req §3: does NOT aggressively mask names.
+const _REPORTS_FE_RX = [
+  [/\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g, '[EMAIL]'],
+  [/\b[6-9]\d{9}\b/g, '[PHONE]'],
+  [/(?<!\d)(?:\+?1[\s\-.])?\(?\d{3}\)?[\s\-.]\d{3}[\s\-.]\d{4}(?!\d)/g, '[PHONE]'],
+  [/\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b/g, '[AADHAAR]'],
+  [/\b[A-Z]{5}[0-9]{4}[A-Z]\b/g, '[PAN]'],
+]
+function reportSanitize(text = '') {
+  if (!text || typeof text !== 'string') return text
+  let out = text
+  for (const [rx, rep] of _REPORTS_FE_RX) out = out.replace(rx, rep)
+  return out
+}
+
 export default function Reports({ openModal }) {
   const [reports, setReports] = useState([])
   const [loading, setLoading] = useState(true)
@@ -259,7 +275,7 @@ export default function Reports({ openModal }) {
                 {filtered.map(r => (
                   <tr key={r.id}>
                     <td><strong>{r.id}</strong></td>
-                    <td style={{ maxWidth: 240 }}>{r.title}</td>
+                    <td style={{ maxWidth: 240 }}>{reportSanitize(r.title)}</td>
                     <td><span className="badge badge-neutral">{r.type}</span></td>
                     <td><span className={`badge badge-${sevColors[r.severity] || 'neutral'}`}>{r.causality}</span></td>
                     <td><span className={`badge badge-${sevColors[r.severity] || 'neutral'}`}>{r.severity}</span></td>

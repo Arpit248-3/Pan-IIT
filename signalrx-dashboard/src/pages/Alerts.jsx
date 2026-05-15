@@ -14,6 +14,23 @@ import { API_BASE } from '../config';
 
 const sevColors = { Critical: 'danger', High: 'warning', Medium: 'info', Low: 'neutral' }
 
+// ── Frontend PII safety net (email/phone/Aadhaar/PAN only) ──────
+// Per security req §3: does NOT aggressively mask names.
+// Backend PIIVault is the source of truth for name/address masking.
+const _ALERTS_FE_RX = [
+  [/\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g, '[EMAIL]'],
+  [/\b[6-9]\d{9}\b/g, '[PHONE]'],
+  [/(?<!\d)(?:\+?1[\s\-.])?\(?\d{3}\)?[\s\-.]\d{3}[\s\-.]\d{4}(?!\d)/g, '[PHONE]'],
+  [/\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b/g, '[AADHAAR]'],
+  [/\b[A-Z]{5}[0-9]{4}[A-Z]\b/g, '[PAN]'],
+]
+function alertSanitize(text = '') {
+  if (!text || typeof text !== 'string') return text
+  let out = text
+  for (const [rx, rep] of _ALERTS_FE_RX) out = out.replace(rx, rep)
+  return out
+}
+
 /* ── Confidence badge logic ────────────────────────────────── */
 function confidenceStyle(val) {
   const n = typeof val === 'number' ? val : parseInt(val)
@@ -160,14 +177,17 @@ function TraceabilityDrawer({ signal, onClose }) {
               <span style={{
                 fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
                 letterSpacing: '.05em'
-              }}>Original Patient Text</span>
+              }}>Masked Patient Text</span>
+              <span style={{ fontSize: 9, color: '#8B5CF6', fontWeight: 700,
+                background: 'rgba(139,92,246,.12)', border: '1px solid rgba(139,92,246,.25)',
+                borderRadius: 8, padding: '1px 6px', letterSpacing: '.04em' }}>🔒 PII Masked</span>
             </div>
             <div style={{
               padding: '14px 18px', background: '#181825', borderRadius: 'var(--radius)',
               borderLeft: '3px solid #8B5CF6', fontSize: 13, lineHeight: 1.7,
               color: '#cdd6f4', fontFamily: "'JetBrains Mono',Consolas,monospace"
             }}>
-              {signal.raw_text || signal.source_text || `Patient reported experiencing ${signal.event} after taking ${signal.drug}. Time to onset: ${signal.time_to_onset || 'unknown'}.`}
+              {alertSanitize(signal.raw_text || signal.source_text || `Patient reported experiencing ${signal.event} after taking ${signal.drug}. Time to onset: ${signal.time_to_onset || 'unknown'}.`)}
             </div>
           </div>
 
@@ -208,7 +228,7 @@ function TraceabilityDrawer({ signal, onClose }) {
               border: '1px solid rgba(245,158,11,.15)', borderRadius: 'var(--radius)',
               fontSize: 13, lineHeight: 1.7, color: 'var(--text)'
             }}>
-              {signal.reasoning || `Flagged because temporal relationship (${signal.time_to_onset || 'reported'}) and adverse event "${signal.event}" match MedDRA standard for ${signal.drug}. WHO-UMC assessment: ${signal.causality}.`}
+              {alertSanitize(signal.reasoning || `Flagged because temporal relationship (${signal.time_to_onset || 'reported'}) and adverse event "${signal.event}" match MedDRA standard for ${signal.drug}. WHO-UMC assessment: ${signal.causality}.`)}
             </div>
           </div>
 

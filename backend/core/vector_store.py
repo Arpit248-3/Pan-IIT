@@ -85,55 +85,58 @@ class AdverseEventVectorStore:
     def store_event(self, event_text: str, metadata: dict) -> Optional[str]:
         """
         Store an adverse event with its embedding.
-        
+        event_text and all metadata are sanitized (PII stripped) before storage.
+
         Args:
             event_text: Description of the adverse event (e.g., "Lisinopril -> Angioedema")
             metadata: Dict with keys like drug, event, causality, confidence, timestamp
-            
+
         Returns:
             str: Event ID if stored successfully, None otherwise
         """
         if not self._initialized:
             return None
-        
+
         try:
-            # Generate unique ID
-            event_id = f"ae_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hash(event_text) % 10000:04d}"
-            
+            # ── Mask PII before embedding ─────────────────────────
+            from core.pii_vault import sanitize_response as _sanitize_vs
+            safe_text = _sanitize_vs(event_text)
+
+            # Generate unique ID (use safe_text for hash)
+            event_id = f"ae_{datetime.now().strftime('%Y%m%d%H%M%S')}_{hash(safe_text) % 10000:04d}"
+
             # Ensure all metadata values are strings (ChromaDB requirement)
+            # and sanitized to prevent PII leaking into vector metadata
             clean_metadata = {}
             for k, v in metadata.items():
                 if v is None:
                     clean_metadata[k] = "Unknown"
                 elif isinstance(v, (list, dict)):
-                    clean_metadata[k] = json.dumps(v)
+                    clean_metadata[k] = _sanitize_vs(json.dumps(v))
                 else:
-                    clean_metadata[k] = str(v)
-            
+                    clean_metadata[k] = _sanitize_vs(str(v))
+
             clean_metadata["stored_at"] = datetime.now().isoformat()
-            
+
             # Generate embedding or let ChromaDB handle it
             if self.embedder:
-                # Cloud embeddings use embed_query
-                embedding = self.embedder.embed_query(event_text)
+                embedding = self.embedder.embed_query(safe_text)
                 self._collection.add(
                     ids=[event_id],
-                    documents=[event_text],
+                    documents=[safe_text],
                     embeddings=[embedding],
                     metadatas=[clean_metadata]
                 )
-
             else:
                 self._collection.add(
                     ids=[event_id],
-                    documents=[event_text],
+                    documents=[safe_text],
                     metadatas=[clean_metadata]
                 )
 
-            
-            print(f"   🧬 Vector Store: Stored event '{event_id}' — {event_text[:60]}...")
+            print(f"   \U0001f9ec Vector Store: Stored event '{event_id}' — {safe_text[:60]}...")
             return event_id
-            
+
         except Exception as e:
             print(f"   ⚠️ Vector Store: Failed to store event ({e})")
             return None

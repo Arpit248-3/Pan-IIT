@@ -54,7 +54,6 @@ export default function Dashboard() {
     setIsLoading(true)
     setAiResult(null)
     try {
-      // No timeout — let Ollama run as long as it needs (llama3.2:1b ~10-30s on CPU)
       const response = await fetch(`${API_BASE}/api/analyze-case`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -63,7 +62,9 @@ export default function Dashboard() {
       const data = await response.json()
       if (data.status === "success") {
         setAiResult(data)
-        // Refresh stats after analysis
+        // Clear raw input — never keep PII visible after analysis
+        setInputText("")
+        // Refresh dashboard stats, notifications and signals
         try {
           const r2 = await fetch(`${API_BASE}/api/dashboard-stats`)
           const d2 = await r2.json()
@@ -74,6 +75,9 @@ export default function Dashboard() {
       console.error("API Error:", error)
       setAiResult({
         status: "success",
+        masked_text: "[Backend offline — no masking performed]",
+        pii_detected: false, pii_types_detected: [], pii_token_count: 0,
+        intake_id: null, intelligence_id: null, e2b_available: false,
         clinical_data: { suspect_drug: "Backend Offline", adverse_event: "Connection refused", meddra_term: "N/A", concomitant_drugs: [], time_to_onset: "N/A" },
         doctor_verdict: { causality_score: "Unassessable", confidence_score: "0%", reasoning: "Backend server not running. Start with: python server.py", severity: "Low" },
         causality: "Unassessable", confidence: "0%", severity: "Low",
@@ -88,12 +92,30 @@ export default function Dashboard() {
     if (!aiResult) return
     setExportingE2B(true)
     try {
+      // Use backend E2B if intelligence_id is available (production path)
+      if (aiResult.intelligence_id) {
+        const res = await fetch(`${API_BASE}/api/export-e2b/${aiResult.intelligence_id}`)
+        if (res.ok) {
+          const blob = await res.blob()
+          const url = window.URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = `E2B_R3_ICSR_${aiResult.intelligence_id}_${Date.now()}.xml`
+          document.body.appendChild(a)
+          a.click()
+          a.remove()
+          window.URL.revokeObjectURL(url)
+          setExportingE2B(false)
+          return
+        }
+      }
+      // Fallback: client-side masked E2B (never uses raw text)
       const xml = generateClientSideE2B(aiResult)
       const blob = new Blob([xml], { type: 'application/xml' })
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `E2B_ICSR_adhoc_${Date.now()}.xml`
+      a.download = `E2B_ICSR_masked_${Date.now()}.xml`
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -103,6 +125,7 @@ export default function Dashboard() {
     }
     setExportingE2B(false)
   }
+
 
   // Derived dynamic data
   const pieData = stats?.pie_data || [
@@ -159,6 +182,70 @@ export default function Dashboard() {
         {/* AI Result Box */}
         {aiResult && (
           <div style={{ marginTop: 20, padding: 16, background: '#F8FAFC', borderRadius: 8, border: '1px solid #E2E8F0' }}>
+
+            {/* ── PII Vault Protection Card ─────────────────────── */}
+            <div style={{
+              marginBottom: 16, padding: '14px 18px', borderRadius: 8,
+              background: aiResult.pii_detected ? 'rgba(139,92,246,.06)' : 'rgba(16,185,129,.06)',
+              border: `1px solid ${aiResult.pii_detected ? 'rgba(139,92,246,.25)' : 'rgba(16,185,129,.25)'}`,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: 16 }}>🔒</span>
+                <span style={{ fontWeight: 700, fontSize: 14, color: aiResult.pii_detected ? '#8B5CF6' : '#10B981' }}>
+                  PII Vault Protection {aiResult.pii_detected ? '✅' : '— No PII Detected'}
+                </span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '8px 16px', fontSize: 12 }}>
+                <div><span style={{ color: 'var(--muted)', fontWeight: 700 }}>Status:</span>{' '}
+                  <span style={{ color: '#10B981', fontWeight: 600 }}>Protected</span></div>
+                <div><span style={{ color: 'var(--muted)', fontWeight: 700 }}>Masked Tokens:</span>{' '}
+                  <strong>{aiResult.pii_token_count || 0}</strong></div>
+                <div><span style={{ color: 'var(--muted)', fontWeight: 700 }}>Detected Types:</span>{' '}
+                  <span style={{ color: '#8B5CF6', fontWeight: 600 }}>
+                    {aiResult.pii_types_detected?.length ? aiResult.pii_types_detected.join(', ') : 'None'}
+                  </span></div>
+                <div><span style={{ color: 'var(--muted)', fontWeight: 700 }}>AI Input:</span>{' '}
+                  <span style={{ color: '#10B981' }}>Anonymized text only</span></div>
+                <div><span style={{ color: 'var(--muted)', fontWeight: 700 }}>Database Storage:</span>{' '}
+                  <span style={{ color: '#10B981' }}>Masked text stored</span></div>
+                <div><span style={{ color: 'var(--muted)', fontWeight: 700 }}>Original PII:</span>{' '}
+                  <span style={{ color: '#EF4444', fontWeight: 600 }}>Hidden from frontend</span></div>
+              </div>
+              {/* Vault storage confirmations */}
+              {(aiResult.intake_id || aiResult.intelligence_id) && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(139,92,246,.15)',
+                  display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11 }}>
+                  {aiResult.intake_id && (
+                    <span style={{ color: '#10B981', fontWeight: 700 }}>
+                      ✅ Saved to Intake Vault (INT-{String(aiResult.intake_id).padStart(3,'0')})
+                    </span>
+                  )}
+                  {aiResult.intelligence_id && (
+                    <span style={{ color: '#10B981', fontWeight: 700 }}>
+                      ✅ Intelligence Record Created (SIG-{String(aiResult.intelligence_id).padStart(3,'0')})
+                    </span>
+                  )}
+                  {aiResult.e2b_available && (
+                    <span style={{ color: '#3B82F6', fontWeight: 700 }}>
+                      ✅ Available in Data Explorer · Alerts · Reports
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* ── Masked Text Preview ────────────────────────────── */}
+            {aiResult.masked_text && (
+              <div style={{ marginBottom: 16, padding: '12px 16px', background: '#181825', borderRadius: 8,
+                borderLeft: '3px solid #8B5CF6' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: '#8B5CF6', letterSpacing: '.05em',
+                  textTransform: 'uppercase', marginBottom: 6 }}>Masked Patient Text (AI Input)</div>
+                <div style={{ fontFamily: "'JetBrains Mono',Consolas,monospace", fontSize: 12,
+                  color: '#cdd6f4', lineHeight: 1.6 }}>{aiResult.masked_text}</div>
+              </div>
+            )}
+
+            {/* ── Clinical Extraction Grid ───────────────────────── */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 16, marginBottom: 16 }}>
               <div>
                 <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4, textTransform: 'uppercase', fontWeight: 700 }}>🚨 Suspect Drug</div>
@@ -236,7 +323,7 @@ export default function Dashboard() {
                 <button className="btn btn-secondary btn-sm" onClick={handleExportE2B} disabled={exportingE2B}
                   style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   <MdDownload size={14} />
-                  {exportingE2B ? 'Exporting...' : 'Export E2B XML'}
+                  {exportingE2B ? 'Exporting...' : aiResult.intelligence_id ? 'Export E2B XML (R3)' : 'Export E2B XML'}
                 </button>
               </div>
             </div>

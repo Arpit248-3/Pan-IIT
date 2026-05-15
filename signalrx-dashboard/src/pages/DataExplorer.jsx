@@ -27,6 +27,37 @@ function categorizeEmotion(text = '') {
   return 'General Negative'
 }
 
+// ============================================================
+// FRONTEND PII SAFETY NET (last-resort display layer, §3)
+// ONLY masks: emails, phones, Aadhaar, PAN.
+// Does NOT mask names — backend PIIVault is source of truth for those.
+// ============================================================
+const _FE_PII_RX = [
+  [/\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g,                    '[EMAIL]'],
+  [/\b[6-9]\d{9}\b/g,                                                              '[PHONE]'],
+  [/(?<!\d)(?:\+?1[\s\-.])?\(?\d{3}\)?[\s\-.]\d{3}[\s\-.]\d{4}(?!\d)/g,          '[PHONE]'],
+  [/\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b/g,                                          '[AADHAAR]'],
+  [/\b[A-Z]{5}[0-9]{4}[A-Z]\b/g,                                                   '[PAN]'],
+]
+function frontendSanitize(text = '') {
+  if (!text || typeof text !== 'string') return text
+  let out = text
+  for (const [rx, rep] of _FE_PII_RX) out = out.replace(rx, rep)
+  return out
+}
+function hasPiiTokens(text = '') {
+  return /\[(USER|PHONE|EMAIL|ADDR|AADHAAR|PAN)_\d+\]/i.test(text)
+}
+function PiiMaskedBadge() {
+  return (
+    <span title="This record contains masked patient identifiers" style={{
+      display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,
+      padding:'2px 7px',borderRadius:10,letterSpacing:'.04em',whiteSpace:'nowrap',
+      background:'rgba(139,92,246,.15)',color:'#8B5CF6',border:'1px solid rgba(139,92,246,.3)',
+    }}>🔒 PII Masked</span>
+  )
+}
+
 // Sentiment colours
 const SENT_COLORS = {
   Positive: '#10B981',
@@ -415,17 +446,25 @@ export default function DataExplorer() {
               </thead>
               <tbody>
                 {filteredRecords.map(p => {
+                  // ── Frontend safety layer: sanitize display text ──────
+                  const rawContent   = p.content || ''
+                  const safeContent  = frontendSanitize(rawContent)   // strips emails/phones/Aadhaar/PAN
+                  const hasMasked    = hasPiiTokens(safeContent)      // detects [USER_001] vault tokens
+
                   const sentiment = p.sentiment || 'Unknown'
-                  const emotion = sentiment === 'Negative' ? categorizeEmotion(p.content || '') : '—'
+                  const emotion   = sentiment === 'Negative' ? categorizeEmotion(safeContent) : '—'
                   const sentBadge = sentiment === 'Positive' ? 'success'
-                    : sentiment === 'Neutral' ? 'warning'
+                    : sentiment === 'Neutral'  ? 'warning'
                     : sentiment === 'Negative' ? 'danger'
                     : 'neutral'
                   return (
                     <tr key={p.id}>
                       <td><strong>INT-{String(p.id).padStart(3, '0')}</strong></td>
-                      <td style={{ maxWidth: 280, lineHeight: 1.4 }}>
-                        <span title={p.content}>{p.content}</span>
+                      <td style={{ maxWidth: 300, lineHeight: 1.5 }}>
+                        <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                          <span title={safeContent} style={{ fontSize:13 }}>{safeContent}</span>
+                          {hasMasked && <PiiMaskedBadge />}
+                        </div>
                       </td>
                       <td><span className="badge badge-neutral">{(p.platform || 'Unknown').split('(')[0].trim()}</span></td>
                       <td style={{ fontWeight: 600, color: 'var(--blue)' }}>{p.drug_keyword || '—'}</td>

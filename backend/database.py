@@ -8,10 +8,12 @@ PostgreSQL/MySQL migration by changing only DATABASE_URL.
 Integrates with:
   - Vector Store (ChromaDB) for embedding storage
   - Webhook Alerter for urgent event notification
+  - PIIVault sanitizer for safe API responses
 """
 
 import os
 import json
+import re
 import hashlib
 import secrets
 from datetime import datetime
@@ -21,6 +23,46 @@ from dotenv import load_dotenv
 
 # Load environment
 load_dotenv()
+
+# ── PII token detector helpers ────────────────────────────────
+_TOKEN_TYPE_MAP = {
+    'USER':    'USER',
+    'PHONE':   'PHONE',
+    'EMAIL':   'EMAIL',
+    'ADDR':    'ADDRESS',
+    'AADHAAR': 'AADHAAR',
+    'PAN':     'PAN',
+}
+_TOKEN_RX = re.compile(r'\[(USER|PHONE|EMAIL|ADDR|AADHAAR|PAN)_\d+\]')
+
+def _detect_pii_types(text: str) -> list:
+    """Extract list of PII token types present in masked text."""
+    if not text:
+        return []
+    found = set()
+    for m in _TOKEN_RX.finditer(text):
+        found.add(_TOKEN_TYPE_MAP.get(m.group(1), m.group(1)))
+    return sorted(found)
+
+
+# ── Final display sanitizer (outgoing API safety layer) ───────
+_DISPLAY_PATTERNS = [
+    (re.compile(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'), '[EMAIL_REDACTED]'),
+    (re.compile(r'\b[6-9]\d{9}\b'), '[PHONE_REDACTED]'),
+    (re.compile(r'(?<!\d)(?:\+?1[\s\-.])?\(?\d{3}\)?[\s\-.]\d{3}[\s\-.]\d{4}(?!\d)'), '[PHONE_REDACTED]'),
+    (re.compile(r'\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b'), '[AADHAAR_REDACTED]'),
+    (re.compile(r'\b[A-Z]{5}[0-9]{4}[A-Z]\b'), '[PAN_REDACTED]'),
+]
+
+def sanitize_pii_for_display(text: str) -> str:
+    """Backend display sanitizer — emails, phones, Aadhaar, PAN only.
+    Does NOT aggressively mask names; PIIVault handles those at ingestion time.
+    """
+    if not text or not isinstance(text, str):
+        return text
+    for pattern, replacement in _DISPLAY_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///signalrx.db")
 
@@ -267,11 +309,11 @@ def save_intake(text, platform, drug, pii_map="{}"):
         session.commit()
         new_id = record.id  # capture before session closes
         session.refresh(record)
-        print(f"   💾 Intake saved: platform={platform}, drug={drug}, id={new_id}")
+        print(f"   [DB] Intake saved: platform={platform}, drug={drug}, id={new_id}")
         return new_id
     except Exception as e:
         session.rollback()
-        print(f"   ❌ Intake save failed: {e}")
+        print(f"   [DB-ERROR] Intake save failed: {e}")
         return None
     finally:
         session.close()
@@ -486,11 +528,11 @@ def save_intelligence(intake_id, result):
         who_umc_score = umc_details.get('score', 0) if isinstance(umc_details, dict) else 0
         who_umc_factors = json.dumps(umc_details.get('factors', [])) if isinstance(umc_details, dict) else "[]"
         
-        print(f"\n✅ DATA SAVED TO INTELLIGENCE VAULT")
-        print(f"   💊 Drug/Event: {drug} -> {event}")
-        print(f"   📊 Causality: {causality} | Confidence: {confidence} | Severity: {severity}")
-        print(f"   🧠 Reasoning: {reasoning}")
-        print(f"   🔗 Traceability: {pubmed_link}\n")
+        print(f"\n[DB] DATA SAVED TO INTELLIGENCE VAULT")
+        print(f"   [DB] Drug/Event: {drug} -> {event}")
+        print(f"   [DB] Causality: {causality} | Confidence: {confidence} | Severity: {severity}")
+        print(f"   [DB] Reasoning: {reasoning[:80]}")
+        print(f"   [DB] Traceability: {pubmed_link}\n")
         
         # Save to database
         record = IntelligenceVault(
@@ -513,7 +555,9 @@ def save_intelligence(intake_id, result):
         session.commit()
         
         saved_id = record.id
-        
+        session.refresh(record)
+        print(f"   [DB] Intelligence saved: id={saved_id}, drug={drug}, event={event}")
+
         # --- VECTOR STORE INTEGRATION ---
         try:
             from core.vector_store import get_vector_store
@@ -529,8 +573,8 @@ def save_intelligence(intake_id, result):
                 "intelligence_id": str(saved_id)
             })
         except Exception as e:
-            print(f"   ⚠️ Vector store integration skipped: {e}")
-        
+            print(f"   [WARN] Vector store integration skipped: {e}")
+
         # --- WEBHOOK ALERTER ---
         try:
             from core.webhook_alerter import check_and_alert
@@ -543,11 +587,14 @@ def save_intelligence(intake_id, result):
                 intake_id=intake_id
             )
         except Exception as e:
-            print(f"   ⚠️ Webhook alerter skipped: {e}")
-        
+            print(f"   [WARN] Webhook alerter skipped: {e}")
+
+        return saved_id  # ← RETURN the intelligence record ID
+
     except Exception as e:
         session.rollback()
-        print(f"   ❌ Intelligence save failed: {e}")
+        print(f"   [DB-ERROR] Intelligence save failed: {e}")
+        return None
     finally:
         session.close()
 
@@ -557,7 +604,7 @@ def save_intelligence(intake_id, result):
 # ============================================================
 
 def get_all_intelligence():
-    """Get all intelligence records for the dashboard."""
+    """Get all intelligence records for the dashboard. Reasoning is sanitized."""
     session = SessionLocal()
     try:
         records = session.query(IntelligenceVault).order_by(
@@ -573,7 +620,7 @@ def get_all_intelligence():
                 "causality": r.causality,
                 "confidence": r.confidence,
                 "severity": r.severity,
-                "reasoning": r.reasoning,
+                "reasoning": sanitize_pii_for_display(r.reasoning or ""),
                 "pubmed_link": r.pubmed_link,
                 "concomitant_drugs": r.concomitant_drugs,
                 "time_to_onset": r.time_to_onset,
@@ -722,7 +769,10 @@ def get_dashboard_stats():
 
 
 def get_all_intake():
-    """Get all intake vault records for the Data Explorer."""
+    """Get all intake vault records for the Data Explorer.
+    Returns PII-safe data only: pii_map is NEVER returned.
+    Includes pii_masked flag, detected token types, and joined intelligence metadata.
+    """
     session = SessionLocal()
     try:
         records = session.query(IntakeVault).order_by(
@@ -734,15 +784,36 @@ def get_all_intake():
             intel = session.query(IntelligenceVault).filter(
                 IntelligenceVault.intake_id == r.id
             ).first()
+
+            # Sanitize content before returning (belt-and-suspenders)
+            raw = r.raw_text or ""
+            safe_content = sanitize_pii_for_display(raw[:200])
+
+            # Detect PII token types in masked content
+            pii_types = _detect_pii_types(raw)
+            pii_masked = len(pii_types) > 0
+
             result.append({
                 "id": r.id,
-                "content": r.raw_text[:120] if r.raw_text else "",
+                "content": safe_content,
                 "platform": r.platform or "Unknown",
                 "drug_keyword": r.drug_keyword or "Unknown",
                 "status": r.status or "pending",
                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                # Intelligence join fields
                 "sentiment": intel.sentiment if intel else "Unknown",
-                "has_analysis": intel is not None
+                "drug": intel.drug if intel else (r.drug_keyword or "Unknown"),
+                "event": intel.event if intel else "Unknown",
+                "causality": intel.causality if intel else "Pending",
+                "confidence": intel.confidence if intel else "Unknown",
+                "severity": intel.severity if intel else "Unknown",
+                "has_analysis": intel is not None,
+                "intelligence_id": intel.id if intel else None,
+                "e2b_available": intel is not None,
+                # PII safety metadata
+                "pii_masked": pii_masked,
+                "pii_types_detected": pii_types,
+                # pii_map is intentionally NEVER returned
             })
         return result
     finally:

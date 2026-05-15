@@ -2,13 +2,16 @@
 AyuScout V2 — E2B Export Generator
 =====================================
 Generates ICH E2B (R2 SGML and R3 XML) compliant reports for adverse event reporting.
+All patient text and reasoning fields are sanitized via PIIVault before export.
 
+DE-MASKING: Only available for authorized audit use via PIIVault.unmask().
 Reference: ICH E2B(R2) and ICH E2B(R3)
 """
 
 import os
 from datetime import datetime
 from typing import Optional
+from core.pii_vault import sanitize_response as _sanitize
 
 
 # ============================================================
@@ -17,13 +20,15 @@ from typing import Optional
 def generate_e2b_xml(record: dict) -> str:
     """
     Generate an ICH E2B (R3) compliant XML document.
+    All free-text fields are sanitized before embedding.
     """
     record_id = record.get('id', '001')
     drug      = _escape_xml(str(record.get('drug', 'Unknown')))
     event     = _escape_xml(str(record.get('event', 'Unknown')))
     causality = _escape_xml(str(record.get('causality', 'Unassessable')))
     confidence= _escape_xml(str(record.get('confidence', 'Unknown')))
-    reasoning = _escape_xml(str(record.get('reasoning', 'AI assessment')))
+    # Sanitize reasoning — strip any residual PII the LLM may have echoed back
+    reasoning = _escape_xml(_sanitize(str(record.get('reasoning', 'AI assessment'))))
     sentiment = _escape_xml(str(record.get('sentiment', 'Negative')))
     pubmed    = _escape_xml(str(record.get('pubmed_link', 'N/A')))
     time_onset= _escape_xml(str(record.get('time_to_onset', 'Unknown')))
@@ -53,6 +58,8 @@ def generate_e2b_xml(record: dict) -> str:
   Generated: {now.isoformat()}
   Record ID: {record_id}
   Format: ICH E2B(R3) XML
+  SECURITY: All patient PII masked by PIIVault before export.
+  DE-MASKING: Only available for authorized audit use via PIIVault.unmask().
 -->
 <ichicsr lang="en" xmlns="urn:hl7-org:v3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 
@@ -159,15 +166,16 @@ Patient PII has been masked by the PII Vault. Requires human review before regul
 def generate_e2b_r2_xml(record: dict) -> str:
     """
     Generate an ICH E2B (R2) XML document.
-    E2B R2 uses flat element names (SAFETYREPORTID, MEDICALLYCONFIRM, etc.)
-    as defined in ICH M2 EWG guidance.
+    All free-text fields are sanitized before embedding.
+    E2B R2 uses flat element names as defined in ICH M2 EWG guidance.
     """
     record_id  = record.get('id', '001')
     drug       = _escape_xml(str(record.get('drug', 'Unknown')))
     event      = _escape_xml(str(record.get('event', 'Unknown')))
     causality  = _escape_xml(str(record.get('causality', 'Unassessable')))
     confidence = _escape_xml(str(record.get('confidence', 'Unknown')))
-    reasoning  = _escape_xml(str(record.get('reasoning', 'AI assessment')))
+    # Sanitize reasoning before embedding
+    reasoning  = _escape_xml(_sanitize(str(record.get('reasoning', 'AI assessment'))))
     sentiment  = _escape_xml(str(record.get('sentiment', 'Negative')))
     pubmed     = _escape_xml(str(record.get('pubmed_link', 'N/A')))
     time_onset = _escape_xml(str(record.get('time_to_onset', 'Unknown')))
@@ -195,6 +203,8 @@ def generate_e2b_r2_xml(record: dict) -> str:
   Record ID : {record_id}
   Format    : ICH E2B(R2) XML (SGML-compatible)
   Reference : ICH M2 EWG E2B(R2) Implementation Guide
+  SECURITY  : All patient PII masked by PIIVault before export.
+  DE-MASKING: Only available for authorized audit use via PIIVault.unmask().
 -->
 <ich_icsr>
 

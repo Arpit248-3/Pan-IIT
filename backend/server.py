@@ -24,14 +24,16 @@ load_dotenv()
 
 # Import custom modules
 from ai_engine import ayu_scout_ai, _generate_mock_result
+from core.pii_vault import PIIVault as _PIIVault, sanitize_response as _sanitize
 from database import (
     init_db, get_pending_cases, update_status,
-    save_intelligence, get_all_intelligence, get_intelligence_by_id,
+    save_intake, save_intelligence, get_all_intelligence, get_intelligence_by_id,
     get_dashboard_stats, get_all_intake,
     create_user, get_user_by_email, touch_last_login, verify_password,
     create_help_query, get_all_help_queries, get_user_help_queries, answer_help_query,
     create_project, get_all_projects, get_all_signals, get_trends_data,
-    get_notifications, create_notification
+    get_notifications, create_notification,
+    _detect_pii_types, sanitize_pii_for_display
 )
 from crawler import (
     run_simulated_crawler,
@@ -206,62 +208,125 @@ async def _run_pipeline(raw_text: str) -> dict:
 
 
 # ============================================================
-# ENDPOINT 1: MANUAL ANALYSIS (Ad-hoc)
+# ENDPOINT 1: MANUAL ANALYSIS — REAL INGESTION WORKFLOW
 # ============================================================
 @app.post("/api/analyze-case")
 async def analyze_case(report: CaseReport):
     """
-    Analyze a single case report through the full AI pipeline.
-    Returns clinical data, causality assessment, and doctor verdict.
-    Runs until Ollama completes (no timeout).
+    Full production ingestion workflow:
+      1. Mask PII via PIIVault
+      2. Save masked text to IntakeVault
+      3. Run AI pipeline on masked text ONLY
+      4. Save result to IntelligenceVault
+      5. Update intake status to 'analyzed'
+      6. Create notification for significant signals
+      7. Return enriched response (no raw PII, no vault_map)
     """
-    print(f"\n{'='*50}")
-    print(f"[ANALYZE-CASE] New request received")
-    print(f"   Text: {report.text[:120]}...")
-    print(f"{'='*50}")
-    
-    result = await _run_pipeline(report.text)
-    
-    # Format extracted data
+    print(f"\n{'='*55}")
+    print(f"[ANALYZE-CASE] New ingestion request")
+
+    # ── Step 1: Mask PII ─────────────────────────────────────
+    _pii = _PIIVault()
+    masked_text, _vault_map = _pii.mask(report.text, source="analyze-case")
+    pii_types = [k.split('_')[0].replace('[','') for k in _vault_map.keys()]
+    pii_detected = len(_vault_map) > 0
+    pii_token_count = len(_vault_map)
+    print(f"   [PII] Tokens masked: {list(_vault_map.keys())}")
+    print(f"   Masked: {masked_text[:120]}...")
+
+    # ── Step 2: Save to IntakeVault ───────────────────────────
+    intake_id = save_intake(
+        text=masked_text,
+        platform="Manual Overview",
+        drug="Unknown",            # will be refined after AI
+        pii_map=json.dumps(_vault_map)
+    )
+    print(f"   [DB] Intake record created: id={intake_id}")
+
+    # ── Step 3: Run AI Pipeline on masked text ONLY ───────────
+    print(f"{'='*55}")
+    result = await _run_pipeline(masked_text)
+
+    # ── Parse AI outputs ──────────────────────────────────────
     extracted_json = result.get("extracted_data", {})
     if isinstance(extracted_json, str):
         try:
             extracted_json = json.loads(extracted_json)
         except Exception:
-            extracted_json = {"error": "Failed to parse final JSON"}
-    
-    # Format doctor verdict
+            extracted_json = {}
+
     doctor_verdict = result.get("doctor_verdict", {})
     if isinstance(doctor_verdict, str):
         try:
             doctor_verdict = json.loads(doctor_verdict)
         except Exception:
             doctor_verdict = {}
-    
-    # Ensure doctor_verdict is a dict (never None)
     if not isinstance(doctor_verdict, dict):
         doctor_verdict = {}
-    
+
+    # ── Step 4: Save to IntelligenceVault ────────────────────
+    intelligence_id = None
+    if intake_id:
+        intelligence_id = save_intelligence(intake_id, result)
+        print(f"   [DB] Intelligence record created: id={intelligence_id}")
+
+    # ── Step 5: Update intake status ─────────────────────────
+    if intake_id:
+        update_status(intake_id, "analyzed")
+
+    # -- Step 6: Create DB-backed notification --
+    sev = doctor_verdict.get("severity", "Unknown")
+    drug_name = (extracted_json.get("suspect_drug") or "Unknown Drug") if isinstance(extracted_json, dict) else "Unknown Drug"
+    event_name = (extracted_json.get("meddra_term") or extracted_json.get("adverse_event") or "Adverse Event") if isinstance(extracted_json, dict) else "Adverse Event"
+    try:
+        _icon  = "critical" if sev == "Critical" else "warning" if sev == "High" else "info"
+        _type  = "signal"   if sev in ("Critical", "High") else "info"
+        _prio  = "critical" if sev == "Critical" else "high" if sev == "High" else "normal"
+        notif = create_notification(
+            title=f"New protected safety signal: {drug_name} - {event_name}",
+            desc=f"Severity: {sev} | Causality: {doctor_verdict.get('causality_score','Unknown')} | PII Protected by PIIVault",
+            icon=_icon, type=_type, category="Signal", priority=_prio
+        )
+        if notif:
+            print(f"[NOTIFICATION] Created protected signal notification: id={notif.get('id')}")
+    except Exception as e:
+        print(f"   [NOTIFY] Notification skipped: {e}")
+
+    # ── Step 7: Sanitize & build response ─────────────────────
+    reasoning_safe   = _sanitize(doctor_verdict.get("reasoning", ""))
+    interaction_safe = _sanitize(doctor_verdict.get("interaction_reasoning", "No interaction analysis available."))
+
     response = {
         "status": "success",
-        "clean_text": result.get("clean_text", report.text),
+        # ── PII Vault metadata (never exposes originals) ──
+        "masked_text": masked_text,
+        "clean_text": masked_text,
+        "pii_detected": pii_detected,
+        "pii_types_detected": pii_types,
+        "pii_token_count": pii_token_count,
+        "warning": "Original PII is stored only in protected vault map and is never returned to frontend",
+        # ── Storage confirmations ──
+        "intake_id": intake_id,
+        "intelligence_id": intelligence_id,
+        "e2b_available": intelligence_id is not None,
+        # ── Clinical extraction ──
         "clinical_data": extracted_json,
         "doctor_verdict": doctor_verdict,
         "causality": doctor_verdict.get("causality_score", "Pending"),
         "confidence": doctor_verdict.get("confidence_score", "Unknown"),
-        "severity": doctor_verdict.get("severity", "Unknown"),
-        "reasoning": doctor_verdict.get("reasoning", ""),
+        "severity": sev,
+        "reasoning": reasoning_safe,
         "pubmed_link": doctor_verdict.get("pubmed_search_link", ""),
         "extraction_attempts": result.get("extraction_attempts", 0),
         "who_umc_details": doctor_verdict.get("who_umc_details", {}),
-        # --- NEW DDI FIELDS ---
         "alternative_cause_likely": doctor_verdict.get("alternative_cause_likely", False),
         "ddi_risk_level": doctor_verdict.get("ddi_risk_level", "None"),
-        "interaction_reasoning": doctor_verdict.get("interaction_reasoning", "No interaction analysis available.")
+        "interaction_reasoning": interaction_safe,
     }
-    
-    print(f"[ANALYZE-CASE] Response sent: causality={response['causality']}, confidence={response['confidence']}")
+
+    print(f"[ANALYZE-CASE] Done: intake_id={intake_id}, intel_id={intelligence_id}, causality={response['causality']}")
     return response
+
 
 
 # ============================================================
@@ -322,30 +387,67 @@ async def twitter_crawl(req: TwitterCrawlerRequest):
 # ============================================================
 @app.get("/api/process-vault")
 async def process_vault():
-    """Process all pending cases in the intake vault through the AI pipeline."""
+    """Process all pending cases in the intake vault through the AI pipeline.
+    Text from IntakeVault.raw_text is already masked at ingestion time.
+    A defensive re-mask pass is applied here as belt-and-suspenders.
+    """
     print(f"\n[PROCESS-VAULT] Processing pending signals...")
     pending = get_pending_cases()
     processed_results = []
-    
+    _pii = _PIIVault()
+
     for case_id, text in pending:
         print(f"   [PROCESS-VAULT] Case {case_id}: analyzing...")
-        
-        result = await _run_pipeline(text)
-        
-        # Save intelligence and update status
-        save_intelligence(case_id, result)
-        update_status(case_id, 'analyzed')
-        
-        doctor_verdict = result.get("doctor_verdict", {})
-        if not isinstance(doctor_verdict, dict):
-            doctor_verdict = {}
-        
-        processed_results.append({
-            "case_id": case_id,
-            "causality": doctor_verdict.get("causality_score", "Pending"),
-            "confidence": doctor_verdict.get("confidence_score", "Unknown"),
-        })
-    
+        try:
+            # Defensive re-mask (idempotent on already-masked text)
+            safe_text, _ = _pii.mask(text, source=f"process-vault/case-{case_id}")
+
+            result = await _run_pipeline(safe_text)
+
+            # Sanitize LLM-generated reasoning before saving
+            dv = result.get("doctor_verdict", {}) or {}
+            if isinstance(dv, str):
+                try:
+                    dv = json.loads(dv)
+                except Exception:
+                    dv = {}
+            if isinstance(dv, dict) and dv.get("reasoning"):
+                dv["reasoning"] = _sanitize(dv["reasoning"])
+            result["doctor_verdict"] = dv
+
+            intel_id = save_intelligence(case_id, result)
+            update_status(case_id, 'analyzed')
+
+            # Create notification for significant signals
+            _sev = dv.get("severity", "Medium")
+            try:
+                _ed = result.get("extracted_data", {})
+                if isinstance(_ed, str):
+                    try: _ed = json.loads(_ed)
+                    except: _ed = {}
+                _drug  = (_ed.get("suspect_drug") or "Unknown") if isinstance(_ed, dict) else "Unknown"
+                _event = (_ed.get("meddra_term") or _ed.get("adverse_event") or "Adverse Event") if isinstance(_ed, dict) else "Adverse Event"
+                create_notification(
+                    title=f"[Vault] Protected signal: {_drug} - {_event}",
+                    desc=f"Severity: {_sev} | Causality: {dv.get('causality_score','Unknown')} | PII Protected",
+                    icon="critical" if _sev == "Critical" else "warning" if _sev == "High" else "info",
+                    type="signal" if _sev in ("Critical", "High") else "info",
+                    category="Signal", priority="high" if _sev in ("Critical", "High") else "normal"
+                )
+            except Exception as ne:
+                print(f"   [NOTIFY] Vault notification skipped: {ne}")
+
+            processed_results.append({
+                "case_id": case_id,
+                "causality": dv.get("causality_score", "Pending"),
+                "confidence": dv.get("confidence_score", "Unknown"),
+                "intelligence_id": intel_id,
+            })
+        except Exception as ce:
+            print(f"   [PROCESS-VAULT] Case {case_id} failed: {ce}")
+            update_status(case_id, 'failed')
+            processed_results.append({"case_id": case_id, "status": "failed"})
+
     print(f"[PROCESS-VAULT] Batch complete: {len(processed_results)} cases processed")
     return {
         "status": "Batch Analysis Complete",
@@ -510,25 +612,53 @@ async def dashboard_stats():
 # ============================================================
 @app.get("/api/reports")
 async def get_reports():
-    """Get intelligence vault records formatted as reports."""
+    """Get intelligence vault records formatted as reports, enriched with PII safety metadata."""
     try:
         records = get_all_intelligence()
+        # Also get intake records to join pii_masked/pii_types
+        intake_map = {}
+        try:
+            intakes = get_all_intake()
+            intake_map = {r['id']: r for r in intakes if r.get('intelligence_id')}
+            # Re-key by intelligence_id
+            intake_by_intel = {r['intelligence_id']: r for r in intakes if r.get('intelligence_id')}
+        except Exception:
+            intake_by_intel = {}
+
         reports = []
-        for i, r in enumerate(records):
+        for r in records:
+            intake_meta = intake_by_intel.get(r['id'], {})
+            pii_masked = intake_meta.get('pii_masked', False)
+            pii_types  = intake_meta.get('pii_types_detected', [])
+
+            # Derive emotion from reasoning prefix if stored
+            reasoning_raw = r.get('reasoning', '') or ''
+            emotion = ''
+            import re
+            m = re.match(r'^\[Emotion:\s*([^\]]+)\]', reasoning_raw)
+            if m:
+                emotion = m.group(1).strip()
+
             reports.append({
                 "id": f"RPT-{200 + r['id']}",
-                "title": f"{r['drug']} — {r['event']} Safety Analysis",
+                "record_id": r['id'],
+                "intelligence_id": r['id'],
+                "title": sanitize_pii_for_display(f"{r['drug']} - {r['event']} Safety Analysis"),
                 "type": "Signal" if r.get('severity') in ('Critical', 'High') else "Analytics",
                 "status": "Flagged" if r.get('severity') in ('Critical', 'High') else "Reviewed",
                 "statusColor": "danger" if r.get('severity') in ('Critical', 'High') else "success",
                 "causality": r.get('causality', 'Pending'),
                 "confidence": r.get('confidence', 'Unknown'),
                 "severity": r.get('severity', 'Medium'),
+                "sentiment": r.get('sentiment', 'Unknown'),
+                "emotion": emotion,
                 "author": "AyuScout V2 AI",
                 "created_at": r.get('created_at', ''),
                 "drug": r.get('drug', 'Unknown'),
                 "event": r.get('event', 'Unknown'),
-                "record_id": r['id']
+                "pii_masked": pii_masked,
+                "pii_types_detected": pii_types,
+                "e2b_available": True,
             })
         return {"status": "success", "total": len(reports), "reports": reports}
     except Exception as e:
@@ -549,67 +679,73 @@ async def intake_vault():
 
 
 # ============================================================
-# ENDPOINT 12: NOTIFICATIONS
+# ENDPOINT 12: NOTIFICATIONS — REMOVED (legacy)
+# The notification_routes.py router (mounted above) handles all
+# /api/notifications endpoints using the real Notification DB model.
+# This endpoint would conflict — do NOT re-add it here.
 # ============================================================
-@app.get("/api/notifications")
-async def get_notifications():
-    """Get recent notifications from webhook alerts and system events."""
-    try:
-        alerts = get_recent_alerts(limit=20)
-        records = get_all_intelligence()
-        notifications = []
 
-        # Convert webhook alerts (raw text blocks) to notifications
-        for a in alerts:
-            # Parse text block for drug/event info
-            drug = "Unknown"
-            event = "Unknown"
-            severity = "High"
-            time_str = "Recently"
-            if isinstance(a, str):
-                for line in a.split("\n"):
-                    line = line.strip()
-                    if line.startswith("Drug:") and "-> Event:" in line:
-                        # Format: "Drug: Lisinopril -> Event: Angioedema"
-                        after_drug = line.split("Drug:")[-1]
-                        parts = after_drug.split("-> Event:")
-                        drug = parts[0].strip() if len(parts) > 0 else drug
-                        event = parts[1].strip() if len(parts) > 1 else event
-                    elif line.startswith("Severity:"):
-                        severity = line.split("Severity:")[-1].strip()
-                    elif "ALERT TRIGGERED:" in line:
-                        time_str = line.split("ALERT TRIGGERED:")[-1].strip()[:19]
-            elif isinstance(a, dict):
-                drug = a.get('drug', 'Unknown')
-                event = a.get('event', 'Unknown')
-                severity = a.get('severity', 'High')
-                time_str = a.get('time', 'Recently')
-            
-            notifications.append({
-                "type": "alert",
-                "icon": "warning" if severity != "Critical" else "critical",
-                "title": f"Webhook Alert: {drug} — {event}",
-                "desc": f"Severity: {severity} | Urgent alert triggered by AyuScout V2",
-                "time": time_str,
-                "unread": True
-            })
 
-        # Convert recent intelligence records to notifications
-        for r in records[:8]:
-            sev = r.get('severity', 'Medium')
-            notifications.append({
-                "type": "signal" if sev in ('Critical', 'High') else "info",
-                "icon": "critical" if sev == 'Critical' else "warning" if sev == 'High' else "info",
-                "title": f"Signal Detected: {r.get('drug', 'Unknown')} — {r.get('event', 'Unknown')}",
-                "desc": f"WHO-UMC: {r.get('causality', 'Pending')} | Confidence: {r.get('confidence', 'N/A')} | {r.get('reasoning', '')[:100]}",
-                "time": r.get('created_at', 'Unknown'),
-                "unread": sev in ('Critical', 'High'),
-                "severity": sev
-            })
+# ============================================================
+# ENDPOINT 12b: REPAIR PENDING INTAKE (Backfill utility)
+# ============================================================
+@app.post("/api/repair-pending-intake")
+async def repair_pending_intake():
+    """
+    Backfill endpoint: re-processes all pending intake records through
+    the full AI pipeline, saves intelligence, marks as analyzed, creates
+    notifications. Safe to call repeatedly (idempotent on already-analyzed).
+    """
+    print("[REPAIR] Starting pending intake repair...")
+    pending = get_pending_cases()
+    _pii = _PIIVault()
+    repaired, failed = 0, 0
+    results = []
 
-        return {"status": "success", "total": len(notifications), "notifications": notifications}
-    except Exception as e:
-        return {"status": "error", "message": str(e), "total": 0, "notifications": []}
+    for case_id, text in pending:
+        try:
+            safe_text, _ = _pii.mask(text, source=f"repair/{case_id}")
+            result = await _run_pipeline(safe_text)
+
+            dv = result.get("doctor_verdict", {}) or {}
+            if isinstance(dv, str):
+                try: dv = json.loads(dv)
+                except: dv = {}
+            if isinstance(dv, dict) and dv.get("reasoning"):
+                dv["reasoning"] = _sanitize(dv["reasoning"])
+            result["doctor_verdict"] = dv
+
+            intel_id = save_intelligence(case_id, result)
+            update_status(case_id, "analyzed")
+
+            sev = dv.get("severity", "Medium")
+            ed  = result.get("extracted_data", {})
+            if isinstance(ed, str):
+                try: ed = json.loads(ed)
+                except: ed = {}
+            drug_n  = (ed.get("suspect_drug") or "Unknown") if isinstance(ed, dict) else "Unknown"
+            event_n = (ed.get("meddra_term") or ed.get("adverse_event") or "Adverse Event") if isinstance(ed, dict) else "Adverse Event"
+
+            try:
+                create_notification(
+                    title=f"[Repaired] Protected signal: {drug_n} - {event_n}",
+                    desc=f"Severity: {sev} | Backfill repair | PII Protected",
+                    icon="warning" if sev in ("Critical", "High") else "info",
+                    type="signal", category="Signal", priority="normal"
+                )
+            except Exception:
+                pass
+
+            repaired += 1
+            results.append({"case_id": case_id, "status": "repaired", "intelligence_id": intel_id})
+        except Exception as e:
+            print(f"   [REPAIR] Case {case_id} failed: {e}")
+            update_status(case_id, "failed")
+            failed += 1
+            results.append({"case_id": case_id, "status": "failed", "error": str(e)})
+
+    print(f"[REPAIR] Done: repaired={repaired}, failed={failed}")
+    return {"status": "success", "repaired": repaired, "failed": failed, "records": results}
 
 
 # ============================================================
