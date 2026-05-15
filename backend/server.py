@@ -1102,7 +1102,97 @@ async def trends_feed(days: int = 14):
 
 if __name__ == "__main__":
     import uvicorn
-    # Render provides $PORT, defaults to 10000 if not set
-    port = int(os.environ.get("PORT", 8080))
-    # Disable reload for production stability
-    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
+    import socket
+    import subprocess
+    import sys
+    import signal
+    import pathlib
+
+    # ── Port preference: .env → PORT env-var → default 8080 ────
+    _preferred = int(os.environ.get("BACKEND_PORT", os.environ.get("PORT", 8080)))
+    _fallbacks  = [_preferred, 8081, 8082, 8083, 8000]
+
+    def _port_in_use(port: int) -> bool:
+        """Check whether a TCP port is already bound."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", port))
+                return False
+            except OSError:
+                return True
+
+    def _kill_pid_on_port(port: int) -> bool:
+        """
+        On Windows: use netstat + taskkill to free a bound port.
+        Returns True if a process was killed.
+        """
+        try:
+            # Find PID listening on this port
+            out = subprocess.check_output(
+                f"netstat -ano | findstr :{port}", shell=True, stderr=subprocess.DEVNULL
+            ).decode()
+            for line in out.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and f":{port}" in parts[1] and parts[3] == "LISTENING":
+                    pid = int(parts[4])
+                    subprocess.call(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    print(f"   [PORT-MGR] Killed stale process PID={pid} on :{port}")
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _find_free_port(candidates: list) -> int:
+        """
+        Try each port in order.
+        If occupied, attempt to kill the zombie; if that fails, try next port.
+        """
+        for port in candidates:
+            if not _port_in_use(port):
+                return port
+            print(f"   [PORT-MGR] Port {port} occupied — attempting to free it …")
+            killed = _kill_pid_on_port(port)
+            if killed:
+                import time; time.sleep(1)   # give OS time to release the socket
+                if not _port_in_use(port):
+                    print(f"   [PORT-MGR] ✅ Port {port} freed successfully")
+                    return port
+            print(f"   [PORT-MGR] ⚠️  Port {port} still busy — trying next …")
+        raise RuntimeError(
+            f"All candidate ports are occupied: {candidates}\n"
+            "  → Close any running Python/uvicorn processes and retry."
+        )
+
+    # ── Resolve the port ─────────────────────────────────────────
+    print("\n" + "═" * 60)
+    print("  AyuScout V2 — Port Manager")
+    print("═" * 60)
+    try:
+        active_port = _find_free_port(_fallbacks)
+    except RuntimeError as e:
+        print(f"\n❌ {e}")
+        sys.exit(1)
+
+    if active_port != _preferred:
+        print(f"   [PORT-MGR] ⚠️  Preferred port {_preferred} busy → using {active_port}")
+        print(f"   [PORT-MGR]    Update BACKEND_PORT={active_port} in backend/.env to silence this.")
+    else:
+        print(f"   [PORT-MGR] ✅  Port {active_port} is free")
+
+    # ── Write active port so the frontend .env.local can be synced ──
+    port_file = pathlib.Path(__file__).parent / ".active_port"
+    port_file.write_text(str(active_port))
+
+    print(f"\n   ✅ Backend  → http://localhost:{active_port}")
+    print(f"   ✅ API Docs → http://localhost:{active_port}/docs")
+    print("═" * 60 + "\n")
+
+    # ── Launch uvicorn (reload=False prevents double-spawn on Windows) ──
+    uvicorn.run(
+        "server:app",
+        host="0.0.0.0",
+        port=active_port,
+        reload=False,           # reload=True causes WinError 10048 via multiprocessing
+        log_level="info",
+    )
