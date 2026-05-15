@@ -8,8 +8,7 @@ except ImportError:
     pass
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
-
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import json
@@ -35,7 +34,9 @@ from database import (
     get_project_fetched_items, get_project_scraper_status,
     get_all_signals, get_trends_data,
     get_notifications, create_notification,
-    _detect_pii_types, sanitize_pii_for_display
+    _detect_pii_types, sanitize_pii_for_display,
+    create_crawler_session, emit_crawler_log, get_crawler_logs_since,
+    finish_crawler_session, get_crawler_session,
 )
 from crawler import (
     run_simulated_crawler,
@@ -54,9 +55,17 @@ from routes.notification_routes import router as notification_router
 from routes.alert_routes import router as alert_router
 from routes.auth_routes import router as auth_ext_router
 from routes.fda_routes import router as fda_router
+from routes.crawler_routes import router as crawler_router
 
 # ── FDA Service ──────────────────────────────────────────────
 from services.fda_service import analyze_fda, analyze_fda_structured
+# ── Crawler Service (canonical ingestion pipeline) ────────────────────
+from services.crawler_service import ingest_fetched_medical_record
+# ── Source Registry ────────────────────────────────────────────
+from source_registry import (
+    SOURCE_REGISTRY, get_source, get_sources_for_ids,
+    build_crawl_url, list_all_source_ids, get_source_display_name,
+)
 
 
 app = FastAPI(
@@ -83,6 +92,7 @@ app.include_router(notification_router)
 app.include_router(alert_router)
 app.include_router(auth_ext_router)
 app.include_router(fda_router)
+app.include_router(crawler_router)
 
 
 # ============================================================
@@ -116,6 +126,15 @@ class TwitterCrawlerRequest(BaseModel):
     max_requests: int = 1
     max_tweets_to_save: int = 10
     dry_run: bool = False
+
+
+class CrawlerRunRequest(BaseModel):
+    """Request body for the new /api/crawler/run endpoint."""
+    url: str = ""                # target URL or "twitter" for API-based
+    keyword: str                 # drug/topic keyword
+    source_id: str = "generic_web"  # registry source ID
+    project_id: int = None       # optional — links crawl to a project
+    max_records: int = 15        # cap on items to ingest per run
 
 
 class SimilarEventQuery(BaseModel):

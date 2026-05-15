@@ -237,6 +237,47 @@ class AuditLog(Base):
     created_at    = Column(DateTime, default=datetime.now)
 
 
+class CrawlerSession(Base):
+    """
+    Tracks a single crawler deployment run.
+    One session per "Deploy Agentic Crawler" click.
+    """
+    __tablename__ = "crawler_sessions"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    project_id  = Column(Integer, nullable=True)       # FK -> projects.id (None = standalone)
+    source_id   = Column(String(100), nullable=True)   # e.g. 'drugs_com', 'twitter'
+    keyword     = Column(String(300), nullable=True)
+    target_url  = Column(Text, nullable=True)
+    status      = Column(String(50), default='running')  # running|completed|failed|cancelled
+    records_fetched   = Column(Integer, default=0)
+    records_matched   = Column(Integer, default=0)
+    healing_attempts  = Column(Integer, default=0)
+    created_at  = Column(DateTime, default=datetime.now)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class CrawlerLog(Base):
+    """
+    Structured log entry emitted by the crawler engine.
+    Powers the live terminal stream — every log line stored here
+    is queryable and streamable via SSE, replacing all fake/stdout logs.
+    """
+    __tablename__ = "crawler_logs"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    session_id  = Column(Integer, nullable=False)    # FK -> crawler_sessions.id
+    project_id  = Column(Integer, nullable=True)
+    source      = Column(String(100), nullable=True) # 'drugs_com', 'reddit' etc.
+    level       = Column(String(20), default='INFO') # INFO|SUCCESS|ERROR|WARNING|HEALING|FETCH|PARSE|AI|FDA|INIT
+    event_type  = Column(String(50), default='INFO') # INIT|FETCH|PARSE|HEALING|AI_ANALYSIS|FDA_ANALYSIS|SUCCESS|ERROR|etc.
+    message     = Column(Text, nullable=False)
+    url         = Column(Text, nullable=True)
+    keyword     = Column(String(300), nullable=True)
+    metadata_json = Column(Text, default='{}')
+    created_at  = Column(DateTime, default=datetime.now)
+
+
 # ============================================================
 # PASSWORD HELPERS
 # ============================================================
@@ -283,6 +324,11 @@ def init_db():
         # ── FDA persistence columns (safe to run on existing DBs) ──
         "ALTER TABLE intake_vault ADD COLUMN fda_analysis_json TEXT",
         "ALTER TABLE intelligence_vault ADD COLUMN fda_analysis_json TEXT",
+        # ── Crawler session + log tables (new — idempotent via CREATE TABLE) ──
+        # These are created by create_all() above; migrations are no-ops on fresh DBs
+        "ALTER TABLE crawler_sessions ADD COLUMN records_fetched INTEGER DEFAULT 0",
+        "ALTER TABLE crawler_sessions ADD COLUMN records_matched INTEGER DEFAULT 0",
+        "ALTER TABLE crawler_sessions ADD COLUMN healing_attempts INTEGER DEFAULT 0",
     ]
     with engine.connect() as conn:
         for sql in _safe_migrations:
@@ -1941,3 +1987,178 @@ def get_critical_alerts_count():
         ).count()
     finally:
         session.close()
+
+
+# ============================================================
+# CRAWLER SESSION + LOG HELPERS
+# ============================================================
+
+def create_crawler_session(
+    project_id: int = None,
+    source_id: str = None,
+    keyword: str = None,
+    target_url: str = None,
+) -> int:
+    """
+    Create a new crawler session record.
+    Returns the new session ID.
+    One session = one 'Deploy Agentic Crawler' click or one scheduled run.
+    """
+    session = SessionLocal()
+    try:
+        rec = CrawlerSession(
+            project_id=project_id,
+            source_id=source_id,
+            keyword=keyword,
+            target_url=target_url,
+            status="running",
+            records_fetched=0,
+            records_matched=0,
+            healing_attempts=0,
+            created_at=datetime.now(),
+        )
+        session.add(rec)
+        session.commit()
+        session.refresh(rec)
+        return rec.id
+    except Exception as e:
+        session.rollback()
+        print(f"[DB-ERROR] create_crawler_session: {e}")
+        return -1
+    finally:
+        session.close()
+
+
+def emit_crawler_log(
+    session_id: int,
+    message: str,
+    event_type: str = "INFO",
+    level: str = "INFO",
+    source: str = None,
+    project_id: int = None,
+    url: str = None,
+    keyword: str = None,
+    metadata: dict = None,
+) -> int:
+    """
+    Persist a single structured crawler log entry.
+    This replaces all print() calls in the crawler engine.
+    Returns the new log record ID (used for polling cursors).
+    """
+    db = SessionLocal()
+    try:
+        rec = CrawlerLog(
+            session_id=session_id,
+            project_id=project_id,
+            source=source,
+            level=level,
+            event_type=event_type,
+            message=message,
+            url=url,
+            keyword=keyword,
+            metadata_json=json.dumps(metadata or {}),
+            created_at=datetime.now(),
+        )
+        db.add(rec)
+        db.commit()
+        db.refresh(rec)
+        # Mirror to stdout for server terminal visibility
+        print(f"[CRAWLER][{event_type}] {message}")
+        return rec.id
+    except Exception as e:
+        db.rollback()
+        print(f"[DB-ERROR] emit_crawler_log: {e}")
+        return -1
+    finally:
+        db.close()
+
+
+def get_crawler_logs_since(session_id: int, after_id: int = 0) -> list[dict]:
+    """
+    Return all log entries for a session with id > after_id.
+    Used by the SSE/polling endpoint to stream incremental logs.
+    """
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(CrawlerLog)
+            .filter(
+                CrawlerLog.session_id == session_id,
+                CrawlerLog.id > after_id,
+            )
+            .order_by(CrawlerLog.id.asc())
+            .limit(200)
+            .all()
+        )
+        return [
+            {
+                "id": r.id,
+                "session_id": r.session_id,
+                "event_type": r.event_type,
+                "level": r.level,
+                "message": r.message,
+                "source": r.source,
+                "url": r.url,
+                "keyword": r.keyword,
+                "timestamp": r.created_at.isoformat() if r.created_at else None,
+                "metadata": json.loads(r.metadata_json or "{}"),
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"[DB-ERROR] get_crawler_logs_since: {e}")
+        return []
+    finally:
+        db.close()
+
+
+def finish_crawler_session(
+    session_id: int,
+    status: str = "completed",
+    records_fetched: int = 0,
+    records_matched: int = 0,
+    healing_attempts: int = 0,
+):
+    """Mark a crawler session as finished and record final stats."""
+    db = SessionLocal()
+    try:
+        rec = db.query(CrawlerSession).filter(CrawlerSession.id == session_id).first()
+        if rec:
+            rec.status = status
+            rec.records_fetched = records_fetched
+            rec.records_matched = records_matched
+            rec.healing_attempts = healing_attempts
+            rec.finished_at = datetime.now()
+            db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[DB-ERROR] finish_crawler_session: {e}")
+    finally:
+        db.close()
+
+
+def get_crawler_session(session_id: int) -> dict:
+    """Return a session record as dict."""
+    db = SessionLocal()
+    try:
+        rec = db.query(CrawlerSession).filter(CrawlerSession.id == session_id).first()
+        if not rec:
+            return {}
+        return {
+            "id": rec.id,
+            "project_id": rec.project_id,
+            "source_id": rec.source_id,
+            "keyword": rec.keyword,
+            "target_url": rec.target_url,
+            "status": rec.status,
+            "records_fetched": rec.records_fetched,
+            "records_matched": rec.records_matched,
+            "healing_attempts": rec.healing_attempts,
+            "created_at": rec.created_at.isoformat() if rec.created_at else None,
+            "finished_at": rec.finished_at.isoformat() if rec.finished_at else None,
+        }
+    except Exception as e:
+        print(f"[DB-ERROR] get_crawler_session: {e}")
+        return {}
+    finally:
+        db.close()

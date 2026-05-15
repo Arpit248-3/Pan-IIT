@@ -36,7 +36,7 @@ try:
         fast_local_llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key, temperature=0)
         json_local_llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key, temperature=0.2)
         LLM_AVAILABLE = True
-        print("✅ AI Engine: Gemini models loaded (gemini-1.5-flash)")
+        print("[OK] AI Engine: Gemini models loaded (gemini-1.5-flash)")
     else:
         # Fallback to Ollama for local dev if no API key
         try:

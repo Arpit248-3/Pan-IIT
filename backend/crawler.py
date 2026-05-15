@@ -27,12 +27,12 @@ try:
     _llm = ChatOllama(model="llama3.2:1b", temperature=0)
     _json_llm = ChatOllama(model="llama3.2:1b", temperature=0.1, format="json")
     USE_LLM = True
-    print("✅ Crawler: Ollama loaded (llama3.2:1b)")
+    print("[OK] Crawler: Ollama loaded (llama3.2:1b)")
 except Exception as e:
     USE_LLM = False
     _llm = None
     _json_llm = None
-    print(f"⚠️ Crawler: Ollama unavailable ({e}). Heuristic mode active.")
+    print(f"[WARN] Crawler: Ollama unavailable ({e}). Heuristic mode active.")
 
 # ── Keyword gate fallback ────────────────────────────────────────
 NEGATIVE_KEYWORDS = [
