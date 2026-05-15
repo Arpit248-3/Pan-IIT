@@ -32,6 +32,7 @@ from database import (
     create_user, get_user_by_email, touch_last_login, verify_password,
     create_help_query, get_all_help_queries, get_user_help_queries, answer_help_query,
     create_project, get_all_projects, get_project_by_id, delete_project, update_project,
+    get_project_fetched_items, get_project_scraper_status,
     get_all_signals, get_trends_data,
     get_notifications, create_notification,
     _detect_pii_types, sanitize_pii_for_display
@@ -968,10 +969,10 @@ async def agentic_scraper_generate(req: AgentGenerateRequest):
 # ENDPOINT 20: PROJECTS — LIST
 # ============================================================
 @app.get("/api/projects")
-async def list_projects():
-    """Return all monitoring projects from the database."""
+async def list_projects(owner_id: int = None, owner_email: str = None):
+    """Return monitoring projects. Pass owner_id to isolate by user."""
     try:
-        projects = get_all_projects()
+        projects = get_all_projects(owner_id=owner_id, owner_email=owner_email)
         return {"status": "success", "total": len(projects), "projects": projects}
     except Exception as e:
         return {"status": "error", "message": str(e), "total": 0, "projects": []}
@@ -983,11 +984,14 @@ async def list_projects():
 class ProjectCreateRequest(BaseModel):
     name: str
     keywords: list = []
-    sources: list = ['twitter']          # Only Twitter supported
+    sources: list = ['twitter']
     scraper_config: dict = {}
     agentic_enabled: bool = False
     schedule_interval: str = 'Daily'
-    owner_id: int = None                 # Set to logged-in user's ID
+    owner_id: int = None
+    owner_email: str = None
+    source_type: str = 'social'
+    source_url: str = None
 
 
 @app.post("/api/projects")
@@ -1003,6 +1007,9 @@ async def create_project_endpoint(req: ProjectCreateRequest):
         agentic_enabled=req.agentic_enabled,
         schedule_interval=req.schedule_interval,
         owner_id=req.owner_id,
+        owner_email=req.owner_email,
+        source_type=req.source_type or 'social',
+        source_url=req.source_url,
     )
     if not project:
         raise HTTPException(status_code=500, detail="Failed to save project")
@@ -1013,12 +1020,51 @@ async def create_project_endpoint(req: ProjectCreateRequest):
 # ENDPOINT 21b: PROJECTS — GET SINGLE
 # ============================================================
 @app.get("/api/projects/{project_id}")
-async def get_project_endpoint(project_id: int):
-    """Return a single project with full live metrics."""
-    project = get_project_by_id(project_id)
+async def get_project_endpoint(project_id: int, owner_id: int = None):
+    """Return a single project. Pass owner_id to enforce access control."""
+    project = get_project_by_id(project_id, owner_id=owner_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="Project not found or access denied")
     return {"status": "success", "project": project}
+
+
+# ============================================================
+# ENDPOINT 21b-i: PROJECTS — FETCHED ITEMS LIST
+# ============================================================
+@app.get("/api/projects/{project_id}/items")
+async def get_project_items(project_id: int, keyword: str = None, limit: int = 50, owner_id: int = None):
+    """
+    Return actual intake records matching this project's keywords.
+    Used by ProjectDetails fetched-items section.
+    """
+    # Verify project access
+    project = get_project_by_id(project_id, owner_id=owner_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found or access denied")
+    try:
+        items = get_project_fetched_items(project_id, keyword_filter=keyword, limit=min(limit, 100))
+        return {"status": "success", "total": len(items), "items": items}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "total": 0, "items": []}
+
+
+# ============================================================
+# ENDPOINT 21b-ii: PROJECTS — SCRAPER STATUS
+# ============================================================
+@app.get("/api/projects/{project_id}/scraper-status")
+async def get_project_scraper_status_endpoint(project_id: int, owner_id: int = None):
+    """
+    Return dynamic scraper status derived from real intake data.
+    Never hardcodes Idle/Never — always derived from DB records.
+    """
+    project = get_project_by_id(project_id, owner_id=owner_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found or access denied")
+    try:
+        status_data = get_project_scraper_status(project_id)
+        return {"status": "success", "scraper": status_data}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "scraper": {}}
 
 
 # ============================================================
@@ -1026,33 +1072,38 @@ async def get_project_endpoint(project_id: int):
 # ============================================================
 class ProjectUpdateRequest(BaseModel):
     name: str = None
-    status: str = None           # Active|Paused|Monitoring|Completed|Failed
+    status: str = None
     scraper_status: str = None
     ai_agent_status: str = None
     schedule_interval: str = None
     keywords: list = None
     completion_reason: str = None
     visibility: str = None
+    source_type: str = None
+    source_url: str = None
+    owner_id: int = None
 
 
 @app.put("/api/projects/{project_id}")
 async def update_project_endpoint(project_id: int, req: ProjectUpdateRequest):
-    """Update a project's mutable fields."""
+    """Update a project's mutable fields. Enforces ownership via req.owner_id."""
     import json as _json
     update_kwargs = {}
-    if req.name is not None:             update_kwargs['name'] = req.name.strip()
-    if req.status is not None:           update_kwargs['status'] = req.status
-    if req.scraper_status is not None:   update_kwargs['scraper_status'] = req.scraper_status
-    if req.ai_agent_status is not None:  update_kwargs['ai_agent_status'] = req.ai_agent_status
+    if req.name is not None:              update_kwargs['name'] = req.name.strip()
+    if req.status is not None:            update_kwargs['status'] = req.status
+    if req.scraper_status is not None:    update_kwargs['scraper_status'] = req.scraper_status
+    if req.ai_agent_status is not None:   update_kwargs['ai_agent_status'] = req.ai_agent_status
     if req.schedule_interval is not None: update_kwargs['schedule_interval'] = req.schedule_interval
     if req.completion_reason is not None: update_kwargs['completion_reason'] = req.completion_reason
     if req.visibility is not None:        update_kwargs['visibility'] = req.visibility
+    if req.source_type is not None:       update_kwargs['source_type'] = req.source_type
+    if req.source_url is not None:        update_kwargs['source_url'] = req.source_url
     if req.keywords is not None:
         update_kwargs['keywords_json'] = _json.dumps(req.keywords)
 
-    updated = update_project(project_id, **update_kwargs)
+    updated = update_project(project_id, owner_id=req.owner_id, **update_kwargs)
     if not updated:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="Project not found or access denied")
     return {"status": "success", "project": updated}
 
 
@@ -1060,11 +1111,11 @@ async def update_project_endpoint(project_id: int, req: ProjectUpdateRequest):
 # ENDPOINT 21d: PROJECTS — DELETE
 # ============================================================
 @app.delete("/api/projects/{project_id}")
-async def delete_project_endpoint(project_id: int):
-    """Hard-delete a project by ID."""
-    ok = delete_project(project_id)
+async def delete_project_endpoint(project_id: int, owner_id: int = None):
+    """Hard-delete a project. Pass owner_id to enforce ownership."""
+    ok = delete_project(project_id, owner_id=owner_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="Project not found or access denied")
     return {"status": "success", "message": f"Project {project_id} deleted"}
 
 

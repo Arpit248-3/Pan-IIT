@@ -18,7 +18,7 @@ import {
   MdAutoFixHigh, MdRefresh, MdOpenInNew, MdBolt,
   MdCheckCircle, MdRadioButtonChecked, MdInfoOutline,
 } from 'react-icons/md'
-import { SiX } from 'react-icons/si'
+import SourceIcon from '../components/SourceIcon'
 import ProjectSetupWizard from '../components/ProjectSetupWizard'
 import { API_BASE } from '../config'
 
@@ -207,8 +207,14 @@ function ProjectCard({ project, currentUser, onViewDetails, onDelete, onEdit }) 
               {project.name}
             </h3>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <SiX size={11} style={{ color: '#1DA1F2', flexShrink: 0 }} />
-              <span style={{ fontSize: 11, color: 'var(--muted)' }}>Twitter</span>
+              <SourceIcon
+                source={project.source_label || (project.sources?.[0]) || 'twitter'}
+                sourceType={project.source_type}
+                size={11}
+              />
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+                {project.source_label || 'Twitter'}
+              </span>
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0, marginLeft: 8 }}>
@@ -344,17 +350,27 @@ export default function Projects({ currentUser, onNavigate, openModal: _openModa
   const fetchProjects = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/projects`)
+      // Pass owner_id for server-side user isolation
+      const ownerId = currentUser?.id
+      const url = ownerId
+        ? `${API_BASE}/api/projects?owner_id=${ownerId}`
+        : `${API_BASE}/api/projects`
+      const res = await fetch(url)
       const data = await res.json()
       if (data.status === 'success') {
-        setProjects(data.projects ?? [])
+        let projs = data.projects ?? []
+        // Client-side defense: also filter if owner_id known
+        if (ownerId) {
+          projs = projs.filter(p => !p.owner_id || p.owner_id === ownerId)
+        }
+        setProjects(projs)
       }
     } catch (err) {
       console.error('[Projects] Fetch error:', err)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [currentUser?.id])
 
   useEffect(() => { fetchProjects() }, [fetchProjects])
 
@@ -382,7 +398,11 @@ export default function Projects({ currentUser, onNavigate, openModal: _openModa
     if (!deleteTarget) return
     setDeleting(true)
     try {
-      const res = await fetch(`${API_BASE}/api/projects/${deleteTarget.id}`, { method: 'DELETE' })
+      const ownerId = currentUser?.id
+      const url = ownerId
+        ? `${API_BASE}/api/projects/${deleteTarget.id}?owner_id=${ownerId}`
+        : `${API_BASE}/api/projects/${deleteTarget.id}`
+      const res = await fetch(url, { method: 'DELETE' })
       if (res.ok) {
         setProjects(prev => (prev ?? []).filter(p => p.id !== deleteTarget.id))
       }
@@ -402,7 +422,11 @@ export default function Projects({ currentUser, onNavigate, openModal: _openModa
       const res = await fetch(`${API_BASE}/api/projects/${editTarget.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: form.name, status: form.status }),
+        body: JSON.stringify({
+          name: form.name,
+          status: form.status,
+          owner_id: currentUser?.id ?? null,
+        }),
       })
       const data = await res.json()
       if (data.status === 'success') {

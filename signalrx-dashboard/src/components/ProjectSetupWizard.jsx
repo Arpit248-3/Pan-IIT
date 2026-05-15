@@ -201,11 +201,14 @@ export default function ProjectSetupWizard({ onClose, currentUser }) {
         body: JSON.stringify({
           name: projectName.trim(),
           keywords: activeKeywords,
-          sources: ['twitter'],          // always Twitter
+          sources: ['twitter'],
           scraper_config: agentApproved ? agentResult : {},
           agentic_enabled: !!agentApproved,
           schedule_interval: LATENCY_TO_INTERVAL[latency] || 'Daily',
           owner_id: currentUser?.id ?? null,
+          owner_email: currentUser?.email ?? null,
+          source_type: 'social',
+          source_url: null,
         }),
       })
 

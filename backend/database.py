@@ -148,15 +148,18 @@ class Project(Base):
 
     id                  = Column(Integer, primary_key=True, autoincrement=True)
     name                = Column(String(300), nullable=False)
-    owner_id            = Column(Integer, nullable=True)          # FK → users.id
+    owner_id            = Column(Integer, nullable=True)          # FK -> users.id
+    owner_email         = Column(String(300), nullable=True)      # Denormalized for fast filtering
     keywords_json       = Column(Text, default="[]")              # JSON array of keyword strings
     keyword_colors_json = Column(Text, default="[]")              # JSON array of hex colors per keyword
-    sources_json        = Column(Text, default='["twitter"]')     # Only Twitter supported
+    sources_json        = Column(Text, default='["twitter"]')     # Array of source IDs
+    source_type         = Column(String(50), default='social')    # social|encyclopedia|custom_url|blog|news|unknown
+    source_url          = Column(Text, nullable=True)             # URL if source is website/wiki/blog
     scraper_config_json = Column(Text, default="{}")              # Agentic scraper config
     status              = Column(String(50), default='Active')    # Active|Paused|Monitoring|Completed|Failed
     agentic_enabled     = Column(Boolean, default=False)
     schedule_interval   = Column(String(50), default='Daily')     # Real-time|Daily|Weekly
-    scraper_status      = Column(String(50), default='Idle')      # Idle|Running|Paused|Error
+    scraper_status      = Column(String(50), default='Idle')      # Idle|Running|Paused|Completed|Failed
     ai_agent_status     = Column(String(50), default='Standby')   # Standby|Processing|Done
     visibility          = Column(String(20), default='private')   # private|team|public
     completion_reason   = Column(Text, nullable=True)
@@ -262,7 +265,10 @@ def init_db():
     _safe_migrations = [
         "ALTER TABLE projects ADD COLUMN schedule_interval VARCHAR(50) DEFAULT 'Daily'",
         "ALTER TABLE projects ADD COLUMN owner_id INTEGER",
+        "ALTER TABLE projects ADD COLUMN owner_email VARCHAR(300)",
         "ALTER TABLE projects ADD COLUMN keyword_colors_json TEXT DEFAULT '[]'",
+        "ALTER TABLE projects ADD COLUMN source_type VARCHAR(50) DEFAULT 'social'",
+        "ALTER TABLE projects ADD COLUMN source_url TEXT",
         "ALTER TABLE projects ADD COLUMN scraper_status VARCHAR(50) DEFAULT 'Idle'",
         "ALTER TABLE projects ADD COLUMN ai_agent_status VARCHAR(50) DEFAULT 'Standby'",
         "ALTER TABLE projects ADD COLUMN visibility VARCHAR(20) DEFAULT 'private'",
@@ -1009,23 +1015,36 @@ def _serialize_query(q):
 
 def create_project(name: str, keywords: list, sources: list, scraper_config: dict = None,
                    agentic_enabled: bool = False, schedule_interval: str = 'Daily',
-                   owner_id: int = None):
+                   owner_id: int = None, owner_email: str = None,
+                   source_type: str = 'social', source_url: str = None):
     """Create and persist a new monitoring project."""
     session = SessionLocal()
     try:
-        # Assign a color palette to keywords
         KEYWORD_COLORS = [
             '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
             '#EC4899', '#06B6D4', '#84CC16', '#F97316', '#6366F1'
         ]
         kw_colors = [KEYWORD_COLORS[i % len(KEYWORD_COLORS)] for i in range(len(keywords or []))]
 
+        # Infer source_type from first source string if not provided
+        _src = (sources[0] if sources else 'twitter').lower()
+        if not source_type or source_type == 'social':
+            if 'wikipedia' in _src:          source_type = 'encyclopedia'
+            elif 'blog' in _src:             source_type = 'blog'
+            elif 'news' in _src:             source_type = 'news'
+            elif 'reddit' in _src:           source_type = 'social'
+            elif 'website' in _src or 'http' in _src: source_type = 'custom_url'
+            else:                            source_type = 'social'
+
         proj = Project(
             name=name,
             owner_id=owner_id,
+            owner_email=owner_email,
             keywords_json=json.dumps(keywords or []),
             keyword_colors_json=json.dumps(kw_colors),
             sources_json=json.dumps(sources or ['twitter']),
+            source_type=source_type,
+            source_url=source_url,
             scraper_config_json=json.dumps(scraper_config or {}),
             status='Active',
             agentic_enabled=agentic_enabled,
@@ -1047,36 +1066,50 @@ def create_project(name: str, keywords: list, sources: list, scraper_config: dic
         session.close()
 
 
-def get_all_projects(owner_id: int = None):
-    """Return all projects ordered by creation date."""
+def get_all_projects(owner_id: int = None, owner_email: str = None):
+    """Return projects ordered by creation date, filtered by owner if provided."""
     session = SessionLocal()
     try:
         q = session.query(Project).order_by(Project.created_at.desc())
-        projs = q.all()
-        return [_serialize_project(p) for p in projs]
+        # Owner isolation: only return projects belonging to this user
+        if owner_id is not None:
+            # Return projects owned by this user OR projects with no owner (legacy)
+            q = q.filter(
+                (Project.owner_id == owner_id) | (Project.owner_id == None)
+            )
+        elif owner_email:
+            q = q.filter(
+                (Project.owner_email == owner_email) | (Project.owner_email == None)
+            )
+        return [_serialize_project(p) for p in q.all()]
     finally:
         session.close()
 
 
-def get_project_by_id(project_id: int):
-    """Return a single project with full live metrics."""
+def get_project_by_id(project_id: int, owner_id: int = None):
+    """Return a single project with full live metrics. Optionally verify ownership."""
     session = SessionLocal()
     try:
         p = session.query(Project).filter(Project.id == project_id).first()
         if not p:
             return None
+        # Ownership check: if owner_id provided and project has an owner, enforce match
+        if owner_id is not None and p.owner_id is not None and p.owner_id != owner_id:
+            return None  # access denied — caller should raise 403
         return _serialize_project(p, full=True)
     finally:
         session.close()
 
 
-def delete_project(project_id: int) -> bool:
-    """Hard-delete a project record."""
+def delete_project(project_id: int, owner_id: int = None) -> bool:
+    """Hard-delete a project record. Enforces ownership if owner_id provided."""
     session = SessionLocal()
     try:
         p = session.query(Project).filter(Project.id == project_id).first()
         if not p:
             return False
+        if owner_id is not None and p.owner_id is not None and p.owner_id != owner_id:
+            return False  # access denied
         session.delete(p)
         session.commit()
         return True
@@ -1088,16 +1121,19 @@ def delete_project(project_id: int) -> bool:
         session.close()
 
 
-def update_project(project_id: int, **kwargs) -> dict:
+def update_project(project_id: int, owner_id: int = None, **kwargs) -> dict:
     """Update allowed project fields. Returns updated serialized project."""
     session = SessionLocal()
     try:
         p = session.query(Project).filter(Project.id == project_id).first()
         if not p:
             return None
+        if owner_id is not None and p.owner_id is not None and p.owner_id != owner_id:
+            return None  # access denied
         ALLOWED = {'name', 'status', 'scraper_status', 'ai_agent_status',
                    'schedule_interval', 'visibility', 'completion_reason', 'keywords_json',
-                   'keyword_colors_json', 'agentic_enabled', 'last_fetched_at'}
+                   'keyword_colors_json', 'agentic_enabled', 'last_fetched_at',
+                   'source_type', 'source_url'}
         for key, val in kwargs.items():
             if key in ALLOWED and hasattr(p, key):
                 setattr(p, key, val)
@@ -1112,6 +1148,173 @@ def update_project(project_id: int, **kwargs) -> dict:
         session.close()
 
 
+def get_project_fetched_items(project_id: int, keyword_filter: str = None, limit: int = 50):
+    """
+    Return actual intake vault records matching this project's keywords.
+    Optionally filter by a specific keyword.
+    Returns sanitized records safe for frontend display.
+    """
+    session = SessionLocal()
+    try:
+        p = session.query(Project).filter(Project.id == project_id).first()
+        if not p:
+            return []
+        try:
+            keywords = json.loads(p.keywords_json or '[]')
+        except Exception:
+            keywords = []
+
+        if not keywords:
+            return []
+
+        kw_lower = [k.lower().strip() for k in keywords if k]
+        if keyword_filter:
+            kw_lower = [k for k in kw_lower if keyword_filter.lower() in k]
+
+        all_records = session.query(IntakeVault).order_by(
+            IntakeVault.created_at.desc()
+        ).limit(500).all()  # cap at 500 to avoid huge queries
+
+        def _matches(record):
+            drug_kw = (record.drug_keyword or '').lower()
+            raw = (record.raw_text or '').lower()
+            return any(kw in drug_kw or kw in raw for kw in kw_lower)
+
+        matching = [r for r in all_records if _matches(r)][:limit]
+
+        result = []
+        for r in matching:
+            # Get linked intelligence record if available
+            intel = session.query(IntelligenceVault).filter(
+                IntelligenceVault.intake_id == r.id
+            ).first()
+
+            raw = r.raw_text or ''
+            safe_content = sanitize_pii_for_display(raw[:300])
+
+            # Determine which keyword matched
+            matched_kw = next(
+                (kw for kw in kw_lower if kw in (r.drug_keyword or '').lower() or kw in raw.lower()),
+                keywords[0] if keywords else 'unknown'
+            )
+
+            result.append({
+                'id': r.id,
+                'content': safe_content,
+                'platform': r.platform or 'Twitter',
+                'drug_keyword': r.drug_keyword or matched_kw,
+                'keyword_matched': matched_kw,
+                'status': r.status or 'pending',
+                'created_at': r.created_at.isoformat() if r.created_at else None,
+                'has_analysis': intel is not None,
+                'sentiment': intel.sentiment if intel else None,
+                'drug': intel.drug if intel else (r.drug_keyword or None),
+                'event': intel.event if intel else None,
+                'severity': intel.severity if intel else None,
+                'causality': intel.causality if intel else None,
+                'confidence': intel.confidence if intel else None,
+                'intelligence_id': intel.id if intel else None,
+                'pii_masked': bool(r.pii_map and r.pii_map != '{}'),
+            })
+        return result
+    finally:
+        session.close()
+
+
+def get_project_scraper_status(project_id: int) -> dict:
+    """
+    Return dynamic scraper status derived from real project + intake data.
+    NEVER returns hardcoded 'Idle'/'Never' unless truly no data exists.
+    """
+    session = SessionLocal()
+    try:
+        p = session.query(Project).filter(Project.id == project_id).first()
+        if not p:
+            return {}
+        try:
+            keywords = json.loads(p.keywords_json or '[]')
+        except Exception:
+            keywords = []
+
+        kw_lower = [k.lower().strip() for k in keywords if k]
+
+        # Query matching intake records
+        latest_intake = None
+        total = 0
+        processed = 0
+        failed = 0
+
+        if kw_lower:
+            all_records = session.query(IntakeVault).order_by(
+                IntakeVault.created_at.desc()
+            ).all()
+
+            def _matches(record):
+                drug_kw = (record.drug_keyword or '').lower()
+                raw = (record.raw_text or '').lower()
+                return any(kw in drug_kw or kw in raw for kw in kw_lower)
+
+            matching = [r for r in all_records if _matches(r)]
+            total = len(matching)
+            processed = sum(1 for r in matching if r.status == 'analyzed')
+            failed = sum(1 for r in matching if r.status == 'failed')
+            if matching:
+                latest_intake = matching[0]  # already sorted desc by created_at
+
+        # Derive scraper_status from real data
+        stored_status = getattr(p, 'scraper_status', None) or 'Idle'
+        progress = round((processed / total) * 100) if total > 0 else 0
+
+        if total > 0 and processed == total:
+            derived_status = 'Completed'
+        elif failed > 0 and processed == 0 and total > 0:
+            derived_status = 'Failed'
+        elif total > 0 and processed < total:
+            derived_status = 'Processing'
+        elif stored_status not in ('Idle', None):
+            derived_status = stored_status
+        else:
+            derived_status = 'Idle'
+
+        # Derive last_fetched_at: use stored value OR latest intake created_at
+        last_fetched = getattr(p, 'last_fetched_at', None)
+        if not last_fetched and latest_intake and latest_intake.created_at:
+            last_fetched = latest_intake.created_at
+
+        # Determine source info
+        try:
+            sources = json.loads(p.sources_json or '["twitter"]')
+            active_source = sources[0] if sources else 'Twitter'
+        except Exception:
+            active_source = 'Twitter'
+
+        source_type = getattr(p, 'source_type', 'social') or 'social'
+        source_url = getattr(p, 'source_url', None)
+
+        # Current target = keyword(s) for social, URL for website
+        if source_type == 'custom_url' and source_url:
+            current_target = source_url
+        elif keywords:
+            current_target = ', '.join(keywords[:3])
+        else:
+            current_target = None
+
+        return {
+            'scraper_status': derived_status,
+            'ai_agent_status': getattr(p, 'ai_agent_status', 'Standby') or 'Standby',
+            'last_fetched_at': last_fetched.isoformat() if last_fetched else None,
+            'active_source': active_source,
+            'source_type': source_type,
+            'source_url': source_url,
+            'current_target': current_target,
+            'total_targets': total,
+            'processed_targets': processed,
+            'failed_fetches': failed,
+            'progress': progress,
+            'schedule_interval': p.schedule_interval or 'Daily',
+        }
+    finally:
+        session.close()
 
 def _serialize_project(p, full: bool = False):
     try:
@@ -1131,7 +1334,6 @@ def _serialize_project(p, full: bool = False):
     except Exception:
         scraper_config = {}
 
-    # Ensure kw_colors has same length as keywords
     KEYWORD_COLORS = [
         '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
         '#EC4899', '#06B6D4', '#84CC16', '#F97316', '#6366F1'
@@ -1139,7 +1341,6 @@ def _serialize_project(p, full: bool = False):
     while len(kw_colors) < len(keywords):
         kw_colors.append(KEYWORD_COLORS[len(kw_colors) % len(KEYWORD_COLORS)])
 
-    # Real-time progress calculation from actual intake records
     metrics = compute_project_progress(keywords)
     progress = metrics['progress']
 
@@ -1148,24 +1349,49 @@ def _serialize_project(p, full: bool = False):
     if progress == 100 and status not in ('Completed', 'Failed'):
         status = 'Completed'
 
-    base = {
+    # Dynamic scraper_status — derive from real data, never hardcode 'Idle' blindly
+    stored_scraper_status = getattr(p, 'scraper_status', None) or 'Idle'
+    if progress == 100:
+        derived_scraper_status = 'Completed'
+    elif metrics['failed_fetches'] > 0 and metrics['processed_targets'] == 0:
+        derived_scraper_status = 'Failed'
+    elif metrics['total_targets'] > 0 and metrics['processed_targets'] < metrics['total_targets']:
+        derived_scraper_status = 'Processing'
+    else:
+        derived_scraper_status = stored_scraper_status
+
+    # Dynamic source label — use first source string
+    _src = (sources[0] if sources else 'twitter').lower()
+    source_type = getattr(p, 'source_type', None) or 'social'
+    source_label_map = {
+        'twitter': 'Twitter', 'x': 'Twitter',
+        'wikipedia': 'Wikipedia',
+        'reddit': 'Reddit',
+        'website': 'Website', 'custom_url': 'Website',
+        'blog': 'Blog', 'news': 'News',
+    }
+    source_label = source_label_map.get(_src, source_label_map.get(source_type, 'Website'))
+
+    return {
         'id': p.id,
         'name': p.name,
         'owner_id': getattr(p, 'owner_id', None),
+        'owner_email': getattr(p, 'owner_email', None),
         'keywords': keywords,
         'keyword_colors': kw_colors,
         'keywords_count': len(keywords),
         'sources': sources,
-        'source_label': 'Twitter',
+        'source_label': source_label,
+        'source_type': source_type,
+        'source_url': getattr(p, 'source_url', None),
         'scraper_config': scraper_config if full else {},
         'status': status,
-        'scraper_status': getattr(p, 'scraper_status', 'Idle') or 'Idle',
+        'scraper_status': derived_scraper_status,
         'ai_agent_status': getattr(p, 'ai_agent_status', 'Standby') or 'Standby',
         'visibility': getattr(p, 'visibility', 'private') or 'private',
         'completion_reason': getattr(p, 'completion_reason', None),
         'agentic_enabled': bool(p.agentic_enabled),
         'schedule_interval': p.schedule_interval or 'Daily',
-        # Real progress metrics
         'progress': progress,
         'total_targets': metrics['total_targets'],
         'processed_targets': metrics['processed_targets'],
@@ -1174,12 +1400,10 @@ def _serialize_project(p, full: bool = False):
         'failed_fetches': metrics['failed_fetches'],
         'remaining': metrics['remaining'],
         'success_rate': metrics['success_rate'],
-        # Timestamps
         'created_at': p.created_at.isoformat() if p.created_at else None,
         'updated_at': getattr(p, 'updated_at', None) and p.updated_at.isoformat(),
         'last_fetched_at': getattr(p, 'last_fetched_at', None) and p.last_fetched_at.isoformat(),
     }
-    return base
 
 def compute_project_progress(keywords: list) -> dict:
     """
