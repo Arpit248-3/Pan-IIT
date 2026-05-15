@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { MdWarning, MdShowChart, MdAssignmentTurnedIn, MdRefresh, MdDoneAll } from 'react-icons/md'
 import { toast } from 'sonner'
 import notificationService from '../services/notificationService'
+import { useDataRefresh } from '../utils/dataEvents'
 
 const iconMap = {
   critical: { icon: MdWarning,            bg: 'var(--danger-bg)', color: 'var(--danger)' },
@@ -31,6 +32,8 @@ export default function Notifications({ currentUser }) {
   }, [userId])
 
   useEffect(() => { fetchNotifications() }, [fetchNotifications])
+  // Auto-refresh when Dashboard fires analysis complete event
+  useDataRefresh(fetchNotifications)
 
   // ── Mark single read → persisted in DB ────────────────────
   const handleMarkRead = useCallback(async (notif) => {

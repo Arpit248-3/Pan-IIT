@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { MdDownload, MdRefresh, MdVisibility, MdClose } from 'react-icons/md'
 
 import { API_BASE } from '../config';
+import { useDataRefresh } from '../utils/dataEvents'
 
 const sevColors = { Critical: 'danger', High: 'warning', Medium: 'info', Low: 'neutral' }
 
@@ -28,7 +29,7 @@ export default function Reports({ openModal }) {
   const [typeFilter, setTypeFilter] = useState('All Types')
   const [statusFilter, setStatusFilter] = useState('All Status')
 
-  const fetchReports = async () => {
+  const fetchReports = useCallback(async () => {
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/api/reports`)
@@ -38,9 +39,11 @@ export default function Reports({ openModal }) {
       console.error('Failed to fetch reports:', err)
     }
     setLoading(false)
-  }
+  }, [])
 
-  useEffect(() => { fetchReports() }, [])
+  useEffect(() => { fetchReports() }, [fetchReports])
+  // Auto-refresh when Dashboard fires analysis complete event
+  useDataRefresh(fetchReports)
 
   // ── E2B R3 Export ─────────────────────────────────────────────
   const handleExportE2B = async (report, format = 'r3') => {

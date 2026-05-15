@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 import { MdArrowUpward, MdArrowDownward, MdOpenInNew, MdDownload, MdScience } from 'react-icons/md'
-
 import { API_BASE } from '../config';
+import { fireDataUpdated } from '../utils/dataEvents'
 
 
 // Color helpers
@@ -64,7 +64,9 @@ export default function Dashboard() {
         setAiResult(data)
         // Clear raw input — never keep PII visible after analysis
         setInputText("")
-        // Refresh dashboard stats, notifications and signals
+        // Fire global refresh — all other open tabs will refetch automatically
+        fireDataUpdated()
+        // Also refresh dashboard stats
         try {
           const r2 = await fetch(`${API_BASE}/api/dashboard-stats`)
           const d2 = await r2.json()
@@ -214,22 +216,25 @@ export default function Dashboard() {
               {/* Vault storage confirmations */}
               {(aiResult.intake_id || aiResult.intelligence_id) && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(139,92,246,.15)',
-                  display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11 }}>
+                  display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11 }}>
                   {aiResult.intake_id && (
                     <span style={{ color: '#10B981', fontWeight: 700 }}>
-                      ✅ Saved to Intake Vault (INT-{String(aiResult.intake_id).padStart(3,'0')})
+                      Saved to Intake Vault (INT-{String(aiResult.intake_id).padStart(3,'0')})
                     </span>
                   )}
                   {aiResult.intelligence_id && (
                     <span style={{ color: '#10B981', fontWeight: 700 }}>
-                      ✅ Intelligence Record Created (SIG-{String(aiResult.intelligence_id).padStart(3,'0')})
+                      Intelligence Record Created (SIG-{String(aiResult.intelligence_id).padStart(3,'0')})
                     </span>
                   )}
                   {aiResult.e2b_available && (
                     <span style={{ color: '#3B82F6', fontWeight: 700 }}>
-                      ✅ Available in Data Explorer · Alerts · Reports
+                      Data Explorer / Alerts / Reports Updated
                     </span>
                   )}
+                  <span style={{ color: '#10B981', fontWeight: 700 }}>
+                    Notification Created
+                  </span>
                 </div>
               )}
             </div>

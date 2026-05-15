@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   MdArrowUpward, MdDownload, MdRefresh, MdClose,
   MdTimeline, MdVisibility, MdSmartToy, MdBiotech,
@@ -11,6 +11,7 @@ import {
 } from 'recharts'
 
 import { API_BASE } from '../config';
+import { useDataRefresh } from '../utils/dataEvents'
 
 const sevColors = { Critical: 'danger', High: 'warning', Medium: 'info', Low: 'neutral' }
 
@@ -326,8 +327,8 @@ export default function Alerts({ openModal }) {
   const [drawerSignal, setDrawerSignal] = useState(null)
   const [sevFilter, setSevFilter] = useState('All')
 
-  /* ── Fetch live signals ─────────────────────────────────────── */
-  const fetchLiveSignals = async () => {
+  /* -- Fetch live signals -- */
+  const fetchLiveSignals = useCallback(async () => {
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/api/alerts-feed`)
@@ -335,17 +336,16 @@ export default function Alerts({ openModal }) {
       if (data.status === 'success') setLiveSignals(data.records || [])
     } catch (err) { console.error('Failed to fetch live signals:', err) }
     setLoading(false)
-  }
+  }, [])
 
-  /* ── Fetch trend timeline from /api/trends ──────────────────── */
-  const fetchTrends = async () => {
+  /* -- Fetch trend timeline from /api/trends -- */
+  const fetchTrends = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/trends?days=7`)
       const data = await res.json()
       if (data.status === 'success' && Array.isArray(data.data) && data.data.length > 0) {
         setTrendData(data.data)
       } else {
-        // Build placeholder buckets if DB is empty
         const days = []
         for (let i = 6; i >= 0; i--) {
           const d = new Date(); d.setDate(d.getDate() - i)
@@ -354,9 +354,11 @@ export default function Alerts({ openModal }) {
         setTrendData(days)
       }
     } catch { /* silently ignore */ }
-  }
+  }, [])
 
-  useEffect(() => { fetchLiveSignals(); fetchTrends() }, [])
+  useEffect(() => { fetchLiveSignals(); fetchTrends() }, [fetchLiveSignals, fetchTrends])
+  // Auto-refresh when Dashboard fires analysis complete event
+  useDataRefresh(fetchLiveSignals)
 
   /* ── E2B Export ───────────────────────────────────────────── */
   const handleExportE2B = async (recordId) => {

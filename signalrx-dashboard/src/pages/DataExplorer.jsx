@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   BarChart, Bar, LineChart, Line, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
@@ -6,6 +6,7 @@ import {
 import { MdRefresh, MdSearch, MdClose, MdScience, MdDataset } from 'react-icons/md'
 
 import { API_BASE } from '../config';
+import { useDataRefresh } from '../utils/dataEvents'
 
 
 // ============================================================
@@ -87,8 +88,8 @@ export default function DataExplorer() {
   const [sourceFilter, setSourceFilter] = useState('All')
   const [sentFilter, setSentFilter]     = useState('All')
 
-  // ── Fetch intake vault (drug_keyword + sentiment from backend) ──
-  const fetchIntake = async () => {
+  // ── Fetch intake vault ─────────────────────────────────────
+  const fetchIntake = useCallback(async () => {
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/api/intake-vault`)
@@ -100,9 +101,11 @@ export default function DataExplorer() {
       console.error('Failed to fetch intake vault:', err)
     }
     setLoading(false)
-  }
+  }, [])
 
-  useEffect(() => { fetchIntake() }, [])
+  useEffect(() => { fetchIntake() }, [fetchIntake])
+  // Auto-refresh when Dashboard fires analysis complete event
+  useDataRefresh(fetchIntake)
 
   // ── Scout handler ──────────────────────────────────────────
   const handleFetchSignals = async () => {
